@@ -1,4 +1,4 @@
-# Copyright 2022 The Orbit Authors. All Rights Reserved.
+# Copyright 2024 The Orbit Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -26,13 +26,13 @@ from orbit import runner
 from orbit import standard_runner
 import orbit.utils
 
-import tensorflow as tf
+import tensorflow as tf, tf_keras
 
 
 def create_model():
-  x = tf.keras.layers.Input(shape=(3,), name="input")
-  y = tf.keras.layers.Dense(4, name="dense")(x)
-  model = tf.keras.Model(x, y)
+  x = tf_keras.layers.Input(shape=(3,), name="input")
+  y = tf_keras.layers.Dense(4, name="dense")(x)
+  model = tf_keras.Model(x, y)
   return model
 
 
@@ -65,10 +65,10 @@ class TestRunner(standard_runner.StandardTrainer,
   def __init__(self, return_numpy=False):
     self.strategy = tf.distribute.get_strategy()
     self.model = create_model()
-    self.optimizer = tf.keras.optimizers.RMSprop(learning_rate=0.1)
+    self.optimizer = tf_keras.optimizers.RMSprop(learning_rate=0.1)
     self.global_step = self.optimizer.iterations
-    self.train_loss = tf.keras.metrics.Mean("train_loss", dtype=tf.float32)
-    self.eval_loss = tf.keras.metrics.Mean("eval_loss", dtype=tf.float32)
+    self.train_loss = tf_keras.metrics.Mean("train_loss", dtype=tf.float32)
+    self.eval_loss = tf_keras.metrics.Mean("eval_loss", dtype=tf.float32)
     self.return_numpy = return_numpy
     train_dataset = self.strategy.distribute_datasets_from_function(dataset_fn)
     eval_dataset = self.strategy.distribute_datasets_from_function(dataset_fn)
@@ -82,7 +82,7 @@ class TestRunner(standard_runner.StandardTrainer,
       inputs, targets = inputs
       with tf.GradientTape() as tape:
         outputs = self.model(inputs)
-        loss = tf.reduce_mean(tf.keras.losses.MSE(targets, outputs))
+        loss = tf.reduce_mean(tf_keras.losses.MSE(targets, outputs))
       grads = tape.gradient(loss, self.model.variables)
       self.optimizer.apply_gradients(zip(grads, self.model.variables))
       self.train_loss.update_state(loss)
@@ -107,7 +107,7 @@ class TestRunner(standard_runner.StandardTrainer,
       """Replicated evaluation step."""
       inputs, targets = inputs
       outputs = self.model(inputs)
-      loss = tf.reduce_mean(tf.keras.losses.MSE(targets, outputs))
+      loss = tf.reduce_mean(tf_keras.losses.MSE(targets, outputs))
       self.eval_loss.update_state(loss)
 
     self.strategy.run(_replicated_step, args=(next(iterator),))
@@ -141,7 +141,7 @@ class TestEvaluator(standard_runner.StandardEvaluator):
       """Replicated evaluation step."""
       inputs, targets = inputs
       outputs = self.model(inputs)
-      loss = tf.reduce_mean(tf.keras.losses.MSE(targets, outputs))
+      loss = tf.reduce_mean(tf_keras.losses.MSE(targets, outputs))
       return loss
 
     per_replica_losses = self.strategy.run(
@@ -170,11 +170,11 @@ class TestEvaluatorWithNestedSummary(standard_runner.StandardEvaluator):
     self.model = create_model()
     dataset = self.strategy.distribute_datasets_from_function(dataset_fn)
     dataset2 = self.strategy.distribute_datasets_from_function(dataset_fn)
-    self.loss = tf.keras.metrics.Mean("loss", dtype=tf.float32)
-    self.accuracy = tf.keras.metrics.CategoricalAccuracy(
+    self.loss = tf_keras.metrics.Mean("loss", dtype=tf.float32)
+    self.accuracy = tf_keras.metrics.CategoricalAccuracy(
         "accuracy", dtype=tf.float32)
-    self.loss2 = tf.keras.metrics.Mean("loss", dtype=tf.float32)
-    self.accuracy2 = tf.keras.metrics.CategoricalAccuracy(
+    self.loss2 = tf_keras.metrics.Mean("loss", dtype=tf.float32)
+    self.accuracy2 = tf_keras.metrics.CategoricalAccuracy(
         "accuracy", dtype=tf.float32)
     standard_runner.StandardEvaluator.__init__(
         self, eval_dataset={
@@ -188,7 +188,7 @@ class TestEvaluatorWithNestedSummary(standard_runner.StandardEvaluator):
       """Replicated evaluation step."""
       inputs, targets = inputs
       outputs = self.model(inputs)
-      loss.update_state(tf.keras.losses.MSE(targets, outputs))
+      loss.update_state(tf_keras.losses.MSE(targets, outputs))
       accuracy.update_state(targets, outputs)
 
     self.strategy.run(
@@ -217,9 +217,9 @@ class TestTrainerWithSummaries(standard_runner.StandardTrainer):
   def __init__(self):
     self.strategy = tf.distribute.get_strategy()
     self.model = create_model()
-    self.optimizer = tf.keras.optimizers.RMSprop(learning_rate=0.1)
+    self.optimizer = tf_keras.optimizers.RMSprop(learning_rate=0.1)
     self.global_step = self.optimizer.iterations
-    self.train_loss = tf.keras.metrics.Mean("train_loss", dtype=tf.float32)
+    self.train_loss = tf_keras.metrics.Mean("train_loss", dtype=tf.float32)
     train_dataset = self.strategy.distribute_datasets_from_function(dataset_fn)
     standard_runner.StandardTrainer.__init__(
         self,
@@ -237,7 +237,7 @@ class TestTrainerWithSummaries(standard_runner.StandardTrainer):
       inputs, targets = inputs
       with tf.GradientTape() as tape:
         outputs = self.model(inputs)
-        loss = tf.reduce_mean(tf.keras.losses.MSE(targets, outputs))
+        loss = tf.reduce_mean(tf_keras.losses.MSE(targets, outputs))
       tf.summary.scalar("loss", loss)
       grads = tape.gradient(loss, self.model.variables)
       self.optimizer.apply_gradients(zip(grads, self.model.variables))
@@ -281,6 +281,7 @@ class ControllerTest(tf.test.TestCase, parameterized.TestCase):
     test_controller.train_and_evaluate(
         train_steps=10, eval_steps=2, eval_interval=6)
     self.assertEqual(test_runner.global_step, 10)
+    self.assertTrue(controller._orbit_api_gauge.get_cell().value())
 
   def test_no_checkpoint_and_summaries(self):
     test_runner = TestRunner()
@@ -293,8 +294,13 @@ class ControllerTest(tf.test.TestCase, parameterized.TestCase):
     test_controller.train_and_evaluate(
         train_steps=10, eval_steps=2, eval_interval=6)
     self.assertEqual(test_runner.global_step, 10)
+    self.assertTrue(controller._orbit_api_gauge.get_cell().value())
 
-  def test_has_checkpoint_no_summaries(self):
+  @parameterized.named_parameters(
+      ("_sync_checkpoint_saving", False),
+      ("_async_checkpoint_saving", True)
+  )
+  def test_has_checkpoint_no_summaries(self, enable_async_checkpoint_saving):
     test_runner = TestRunner()
     # Has checkpoint, but no summary directories.
     checkpoint = tf.train.Checkpoint(model=test_runner.model)
@@ -308,16 +314,24 @@ class ControllerTest(tf.test.TestCase, parameterized.TestCase):
         evaluator=test_runner,
         global_step=test_runner.global_step,
         checkpoint_manager=checkpoint_manager,
+        enable_async_checkpointing=enable_async_checkpoint_saving,
         steps_per_loop=2)
     test_controller.train_and_evaluate(
         train_steps=10, eval_steps=2, eval_interval=6)
     self.assertEqual(test_runner.global_step, 10)
+    self.assertTrue(controller._orbit_api_gauge.get_cell().value())
 
     # No summaries are saved.
     self.assertEmpty(tf.io.gfile.glob(
         os.path.join(checkpoint_manager.directory, "events.*")))
 
-  def test_has_checkpoint_eval_summary_only(self):
+  @parameterized.named_parameters(
+      ("_sync_checkpoint_saving", False),
+      ("_async_checkpoint_saving", True)
+  )
+  def test_has_checkpoint_eval_summary_only(
+      self, enable_async_checkpoint_saving
+  ):
     test_runner = TestRunner()
     # Has checkpoint, but no summary directories.
     checkpoint = tf.train.Checkpoint(model=test_runner.model)
@@ -331,6 +345,7 @@ class ControllerTest(tf.test.TestCase, parameterized.TestCase):
         evaluator=test_runner,
         global_step=test_runner.global_step,
         checkpoint_manager=checkpoint_manager,
+        enable_async_checkpointing=enable_async_checkpoint_saving,
         eval_summary_dir=os.path.join(self.model_dir, "summaries/eval"),
         steps_per_loop=2)
     test_controller.train_and_evaluate(
@@ -344,7 +359,13 @@ class ControllerTest(tf.test.TestCase, parameterized.TestCase):
     self.assertNotEmpty(tf.io.gfile.glob(
         os.path.join(self.model_dir, "summaries/eval/events.*")))
 
-  def test_restore_from_most_recent_checkpoint(self):
+  @parameterized.named_parameters(
+      ("_sync_checkpoint_saving", False),
+      ("_async_checkpoint_saving", True)
+  )
+  def test_restore_from_most_recent_checkpoint(
+      self, enable_async_checkpoint_saving
+  ):
     test_runner = TestRunner()
     checkpoint = tf.train.Checkpoint(model=test_runner.model)
     checkpoint_manager = tf.train.CheckpointManager(
@@ -357,6 +378,7 @@ class ControllerTest(tf.test.TestCase, parameterized.TestCase):
         trainer=test_runner,
         global_step=test_runner.global_step,
         checkpoint_manager=checkpoint_manager,
+        enable_async_checkpointing=enable_async_checkpoint_saving,
         eval_summary_dir=os.path.join(self.model_dir, "summaries/eval"),
         steps_per_loop=5)
     test_controller.train(20)
@@ -364,9 +386,15 @@ class ControllerTest(tf.test.TestCase, parameterized.TestCase):
     restored_path = test_controller.restore_checkpoint()
     self.assertEqual(restored_path, checkpoint_manager.checkpoints[-1])
 
-  @parameterized.named_parameters(("return_numpy", True),
-                                  ("return_tensor", False))
-  def test_train_and_evaluate(self, return_numpy):
+  @parameterized.named_parameters(
+      ("return_numpy_sync_checkpoint_saving", True, False),
+      ("return_numpy_async_checkpoint_saving", True, True),
+      ("return_tensor_sync_checkpoint_saving", False, False),
+      ("return_tensor_async_checkpoint_saving", False, True),
+  )
+  def test_train_and_evaluate(
+      self, return_numpy, enable_async_checkpoint_saving
+  ):
     test_runner = TestRunner(return_numpy=return_numpy)
 
     checkpoint = tf.train.Checkpoint(
@@ -384,6 +412,7 @@ class ControllerTest(tf.test.TestCase, parameterized.TestCase):
         steps_per_loop=2,
         summary_dir=os.path.join(self.model_dir, "summaries/train"),
         checkpoint_manager=checkpoint_manager,
+        enable_async_checkpointing=enable_async_checkpoint_saving,
         eval_summary_dir=os.path.join(self.model_dir, "summaries/eval"))
     test_controller.train_and_evaluate(
         train_steps=10, eval_steps=2, eval_interval=6)
@@ -403,7 +432,11 @@ class ControllerTest(tf.test.TestCase, parameterized.TestCase):
         summaries_with_matching_keyword(
             "eval_loss", os.path.join(self.model_dir, "summaries/eval")))
 
-  def test_train_only(self):
+  @parameterized.named_parameters(
+      ("_sync_checkpoint_saving", False),
+      ("_async_checkpoint_saving", True)
+  )
+  def test_train_only(self, enable_async_checkpoint_saving):
     test_runner = TestRunner()
 
     checkpoint = tf.train.Checkpoint(
@@ -420,6 +453,7 @@ class ControllerTest(tf.test.TestCase, parameterized.TestCase):
         steps_per_loop=2,
         summary_dir=os.path.join(self.model_dir, "summaries/train"),
         checkpoint_manager=checkpoint_manager,
+        enable_async_checkpointing=enable_async_checkpoint_saving,
         eval_summary_dir=os.path.join(self.model_dir, "summaries/eval"),
     )
     test_controller.train(steps=10)
@@ -497,7 +531,11 @@ class ControllerTest(tf.test.TestCase, parameterized.TestCase):
         checkpoint_manager=checkpoint_manager)
     test_controller.evaluate()
 
-  def test_already_trained_model(self):
+  @parameterized.named_parameters(
+      ("_sync_checkpoint_saving", False),
+      ("_async_checkpoint_saving", True)
+  )
+  def test_already_trained_model(self, enable_async_checkpoint_saving):
     test_runner = TestRunner()
     test_runner.global_step.assign(10)
 
@@ -513,7 +551,8 @@ class ControllerTest(tf.test.TestCase, parameterized.TestCase):
         trainer=test_runner,
         global_step=test_runner.global_step,
         steps_per_loop=2,
-        checkpoint_manager=checkpoint_manager)
+        checkpoint_manager=checkpoint_manager,
+        enable_async_checkpointing=enable_async_checkpoint_saving)
     # `global_step` is already `train_steps`.
     test_controller.train(steps=10)
 
@@ -533,7 +572,7 @@ class ControllerTest(tf.test.TestCase, parameterized.TestCase):
         steps_per_loop=2,
         summary_dir=os.path.join(self.model_dir, "summaries/train"),
         summary_interval=2,
-        checkpoint_manager=checkpoint_manager,
+        checkpoint_manager=checkpoint_manager
     )
     test_controller.train(steps=10)
 
@@ -594,6 +633,7 @@ class ControllerTest(tf.test.TestCase, parameterized.TestCase):
           interval = min(train_steps - self.global_step.numpy(), eval_interval)
           num_steps = self.global_step.numpy() + interval
           self.train(steps=num_steps, checkpoint_at_completion=False)
+          self._sync_on_async_checkpointing()
           self.evaluate(steps=eval_steps)
           # Early stop condition.
           if test_runner.eval_loss.result() < 0.1:
@@ -672,7 +712,11 @@ class ControllerTest(tf.test.TestCase, parameterized.TestCase):
     test_controller.train_and_evaluate(
         train_steps=10, eval_steps=2, eval_interval=6)
 
-  def test_eval_and_checkpoint_interval(self):
+  @parameterized.named_parameters(
+      ("_sync_checkpoint_saving", False),
+      ("_async_checkpoint_saving", True)
+  )
+  def test_eval_and_checkpoint_interval(self, enable_async_checkpoint_saving):
     test_runner = TestRunner()
 
     checkpoint = tf.train.Checkpoint(
@@ -689,6 +733,7 @@ class ControllerTest(tf.test.TestCase, parameterized.TestCase):
         global_step=test_runner.global_step,
         steps_per_loop=10,
         checkpoint_manager=checkpoint_manager,
+        enable_async_checkpointing=enable_async_checkpoint_saving,
         summary_dir=self.model_dir)
     test_controller.train_and_evaluate(
         train_steps=10, eval_steps=2, eval_interval=5)
@@ -803,7 +848,7 @@ class ControllerTest(tf.test.TestCase, parameterized.TestCase):
         trainer=test_runner,
         global_step=test_runner.global_step,
         steps_per_loop=steps_per_loop_fn,
-        checkpoint_manager=checkpoint_manager,
+        checkpoint_manager=checkpoint_manager
     )
     test_controller.train(steps=10)
     self.assertEqual(test_runner.global_step, 10)

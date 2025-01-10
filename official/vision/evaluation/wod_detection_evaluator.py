@@ -1,4 +1,4 @@
-# Copyright 2022 The TensorFlow Authors. All Rights Reserved.
+# Copyright 2024 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -16,7 +16,7 @@
 import pprint
 from absl import logging
 
-import tensorflow as tf
+import tensorflow as tf, tf_keras
 from official.vision.ops import box_ops
 from waymo_open_dataset import label_pb2
 from waymo_open_dataset.metrics.python import wod_detection_evaluator
@@ -71,7 +71,7 @@ class WOD2dDetectionEvaluator(wod_detection_evaluator.WODDetectionEvaluator):
     return result_tensor_dict
 
   def update_state(self, groundtruths, predictions):
-    """Update the metrics state with prediction and groundtruth data.
+    """Update the metrics state with prediction and ground-truth data.
 
     Args:
       groundtruths: a dictionary of Tensors including the fields below.
@@ -99,23 +99,15 @@ class WOD2dDetectionEvaluator(wod_detection_evaluator.WODDetectionEvaluator):
       if isinstance(v, tuple):
         predictions[k] = tf.concat(v, axis=0)
 
-    # Change cyclists' type id from 2 to 4, where 3 is reserved for sign.
+    # Change cyclists' type id from 3 to 4, where 3 is reserved for sign.
     groundtruth_type = tf.cast(groundtruths['classes'], tf.uint8)
     groundtruth_type = tf.where(
-        tf.equal(groundtruth_type, 2),
+        tf.equal(groundtruth_type, 3),
         tf.ones_like(groundtruth_type) * 4, groundtruth_type)
     prediction_type = tf.cast(predictions['detection_classes'], tf.uint8)
     prediction_type = tf.where(
-        tf.equal(prediction_type, 2),
+        tf.equal(prediction_type, 3),
         tf.ones_like(prediction_type) * 4, prediction_type)
-
-    # Change pedestrian' type id from 1 to 2.
-    groundtruth_type = tf.where(
-        tf.equal(groundtruth_type, 1),
-        tf.ones_like(groundtruth_type) * 2, groundtruth_type)
-    prediction_type = tf.where(
-        tf.equal(prediction_type, 1),
-        tf.ones_like(prediction_type) * 2, prediction_type)
 
     # Rescale the detection boxes back to original scale.
     image_scale = tf.tile(predictions['image_info'][:, 2:3, :], (1, 1, 2))

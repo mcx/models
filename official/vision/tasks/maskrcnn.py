@@ -1,4 +1,4 @@
-# Copyright 2022 The TensorFlow Authors. All Rights Reserved.
+# Copyright 2024 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -18,7 +18,8 @@ import os
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from absl import logging
-import tensorflow as tf
+import numpy as np
+import tensorflow as tf, tf_keras
 
 from official.common import dataset_fn as dataset_fn_lib
 from official.core import base_task
@@ -31,8 +32,10 @@ from official.vision.dataloaders import tf_example_decoder
 from official.vision.dataloaders import tf_example_label_map_decoder
 from official.vision.evaluation import coco_evaluator
 from official.vision.evaluation import coco_utils
+from official.vision.evaluation import instance_metrics as metrics_lib
 from official.vision.losses import maskrcnn_losses
 from official.vision.modeling import factory
+from official.vision.utils.object_detection import visualization_utils
 
 
 def zero_out_disallowed_class_ids(batch_class_ids: tf.Tensor,
@@ -71,14 +74,14 @@ class MaskRCNNTask(base_task.Task):
   def build_model(self):
     """Builds Mask R-CNN model."""
 
-    input_specs = tf.keras.layers.InputSpec(
+    input_specs = tf_keras.layers.InputSpec(
         shape=[None] + self.task_config.model.input_size)
 
     l2_weight_decay = self.task_config.losses.l2_weight_decay
     # Divide weight decay by 2.0 to match the implementation of tf.nn.l2_loss.
     # (https://www.tensorflow.org/api_docs/python/tf/keras/regularizers/l2)
     # (https://www.tensorflow.org/api_docs/python/tf/nn/l2_loss)
-    l2_regularizer = (tf.keras.regularizers.l2(
+    l2_regularizer = (tf_keras.regularizers.l2(
         l2_weight_decay / 2.0) if l2_weight_decay else None)
 
     model = factory.build_maskrcnn(
@@ -89,9 +92,14 @@ class MaskRCNNTask(base_task.Task):
     if self.task_config.freeze_backbone:
       model.backbone.trainable = False
 
+    # Builds the model through warm-up call.
+    dummy_images = tf_keras.Input(self.task_config.model.input_size)
+    dummy_image_shape = tf_keras.layers.Input([2])
+    _ = model(dummy_images, image_shape=dummy_image_shape, training=False)
+
     return model
 
-  def initialize(self, model: tf.keras.Model):
+  def initialize(self, model: tf_keras.Model):
     """Loads pretrained checkpoint."""
 
     if not self.task_config.init_checkpoint:
@@ -103,7 +111,7 @@ class MaskRCNNTask(base_task.Task):
 
     # Restoring checkpoint.
     if self.task_config.init_checkpoint_modules == 'all':
-      ckpt = tf.train.Checkpoint(**model.checkpoint_items)
+      ckpt = tf.train.Checkpoint(model=model)
       status = ckpt.read(ckpt_dir_or_file)
       status.expect_partial().assert_existing_objects_matched()
     else:
@@ -149,12 +157,12 @@ class MaskRCNNTask(base_task.Task):
         num_scales=self.task_config.model.anchor.num_scales,
         aspect_ratios=self.task_config.model.anchor.aspect_ratios,
         anchor_size=self.task_config.model.anchor.anchor_size,
-        dtype=params.dtype,
         rpn_match_threshold=params.parser.rpn_match_threshold,
         rpn_unmatched_threshold=params.parser.rpn_unmatched_threshold,
         rpn_batch_size_per_im=params.parser.rpn_batch_size_per_im,
         rpn_fg_fraction=params.parser.rpn_fg_fraction,
         aug_rand_hflip=params.parser.aug_rand_hflip,
+        aug_rand_vflip=params.parser.aug_rand_vflip,
         aug_scale_min=params.parser.aug_scale_min,
         aug_scale_max=params.parser.aug_scale_max,
         aug_type=params.parser.aug_type,
@@ -162,7 +170,9 @@ class MaskRCNNTask(base_task.Task):
         max_num_instances=params.parser.max_num_instances,
         include_mask=self.task_config.model.include_mask,
         outer_boxes_scale=self.task_config.model.outer_boxes_scale,
-        mask_crop_size=params.parser.mask_crop_size)
+        mask_crop_size=params.parser.mask_crop_size,
+        dtype=params.dtype,
+    )
 
     if not dataset_fn:
       dataset_fn = dataset_fn_lib.pick_dataset_fn(params.file_type)
@@ -192,8 +202,10 @@ class MaskRCNNTask(base_task.Task):
     return rpn_score_loss, rpn_box_loss
 
   def _build_frcnn_losses(
-      self, outputs: Mapping[str, Any],
-      labels: Mapping[str, Any]) -> Tuple[tf.Tensor, tf.Tensor]:
+      self,
+      outputs: Mapping[str, Any],
+      labels: Mapping[str, Any],
+  ) -> Tuple[tf.Tensor, tf.Tensor]:
     """Builds losses for Fast R-CNN."""
     cascade_ious = self.task_config.model.roi_sampler.cascade_iou_thresholds
 
@@ -212,10 +224,19 @@ class MaskRCNNTask(base_task.Task):
     for cas_num in range(num_det_heads):
       frcnn_cls_loss_i = tf.reduce_mean(
           frcnn_cls_loss_fn(
-              outputs['class_outputs_{}'
-                      .format(cas_num) if cas_num else 'class_outputs'],
-              outputs['class_targets_{}'
-                      .format(cas_num) if cas_num else 'class_targets']))
+              outputs[
+                  'class_outputs_{}'.format(cas_num)
+                  if cas_num
+                  else 'class_outputs'
+              ],
+              outputs[
+                  'class_targets_{}'.format(cas_num)
+                  if cas_num
+                  else 'class_targets'
+              ],
+              self.task_config.losses.class_weights,
+          )
+      )
       frcnn_box_loss_i = tf.reduce_mean(
           frcnn_box_loss_fn(
               outputs['box_outputs_{}'.format(cas_num
@@ -247,6 +268,7 @@ class MaskRCNNTask(base_task.Task):
                    labels: Mapping[str, Any],
                    aux_losses: Optional[Any] = None) -> Dict[str, tf.Tensor]:
     """Builds Mask R-CNN losses."""
+    loss_params = self.task_config.losses
     rpn_score_loss, rpn_box_loss = self._build_rpn_losses(outputs, labels)
     frcnn_cls_loss, frcnn_box_loss = self._build_frcnn_losses(outputs, labels)
     if self.task_config.model.include_mask:
@@ -254,20 +276,20 @@ class MaskRCNNTask(base_task.Task):
     else:
       mask_loss = tf.constant(0.0, dtype=tf.float32)
 
-    params = self.task_config
     model_loss = (
-        params.losses.rpn_score_weight * rpn_score_loss +
-        params.losses.rpn_box_weight * rpn_box_loss +
-        params.losses.frcnn_class_weight * frcnn_cls_loss +
-        params.losses.frcnn_box_weight * frcnn_box_loss +
-        params.losses.mask_weight * mask_loss)
+        loss_params.rpn_score_weight * rpn_score_loss
+        + loss_params.rpn_box_weight * rpn_box_loss
+        + loss_params.frcnn_class_weight * frcnn_cls_loss
+        + loss_params.frcnn_box_weight * frcnn_box_loss
+        + loss_params.mask_weight * mask_loss
+    )
 
     total_loss = model_loss
     if aux_losses:
       reg_loss = tf.reduce_sum(aux_losses)
       total_loss = model_loss + reg_loss
 
-    total_loss = params.losses.loss_weight * total_loss
+    total_loss = loss_params.loss_weight * total_loss
     losses = {
         'total_loss': total_loss,
         'rpn_score_loss': rpn_score_loss,
@@ -316,7 +338,8 @@ class MaskRCNNTask(base_task.Task):
 
   def build_metrics(self, training: bool = True):
     """Builds detection metrics."""
-    metrics = []
+    self.instance_box_perclass_metrics = None
+    self.instance_mask_perclass_metrics = None
     if training:
       metric_names = [
           'total_loss',
@@ -325,11 +348,11 @@ class MaskRCNNTask(base_task.Task):
           'frcnn_cls_loss',
           'frcnn_box_loss',
           'mask_loss',
-          'model_loss'
+          'model_loss',
       ]
-      for name in metric_names:
-        metrics.append(tf.keras.metrics.Mean(name, dtype=tf.float32))
-
+      return [
+          tf_keras.metrics.Mean(name, dtype=tf.float32) for name in metric_names
+      ]
     else:
       if self._task_config.use_coco_metrics:
         self._build_coco_metrics()
@@ -348,12 +371,26 @@ class MaskRCNNTask(base_task.Task):
           raise
         self.wod_metric = wod_detection_evaluator.WOD2dDetectionEvaluator()
 
-    return metrics
+      if self.task_config.use_approx_instance_metrics:
+        self.instance_box_perclass_metrics = metrics_lib.InstanceMetrics(
+            name='instance_box_perclass',
+            num_classes=self.task_config.model.num_classes,
+            iou_thresholds=np.arange(0.5, 1.0, step=0.05),
+        )
+        if self.task_config.model.include_mask:
+          self.instance_mask_perclass_metrics = metrics_lib.InstanceMetrics(
+              name='instance_mask_perclass',
+              use_masks=True,
+              num_classes=self.task_config.model.num_classes,
+              iou_thresholds=np.arange(0.5, 1.0, step=0.05),
+          )
+
+      return []
 
   def train_step(self,
                  inputs: Tuple[Any, Any],
-                 model: tf.keras.Model,
-                 optimizer: tf.keras.optimizers.Optimizer,
+                 model: tf_keras.Model,
+                 optimizer: tf_keras.optimizers.Optimizer,
                  metrics: Optional[List[Any]] = None):
     """Does forward and backward.
 
@@ -392,13 +429,13 @@ class MaskRCNNTask(base_task.Task):
 
       # For mixed_precision policy, when LossScaleOptimizer is used, loss is
       # scaled for numerical stability.
-      if isinstance(optimizer, tf.keras.mixed_precision.LossScaleOptimizer):
+      if isinstance(optimizer, tf_keras.mixed_precision.LossScaleOptimizer):
         scaled_loss = optimizer.get_scaled_loss(scaled_loss)
 
     tvars = model.trainable_variables
     grads = tape.gradient(scaled_loss, tvars)
     # Scales back gradient when LossScaleOptimizer is used.
-    if isinstance(optimizer, tf.keras.mixed_precision.LossScaleOptimizer):
+    if isinstance(optimizer, tf_keras.mixed_precision.LossScaleOptimizer):
       grads = optimizer.get_unscaled_gradients(grads)
     optimizer.apply_gradients(list(zip(grads, tvars)))
 
@@ -410,9 +447,52 @@ class MaskRCNNTask(base_task.Task):
 
     return logs
 
+  def _update_metrics(self, labels, outputs, logs):
+    instance_predictions = {
+        'detection_boxes': outputs['detection_boxes'],
+        'detection_scores': outputs['detection_scores'],
+        'detection_classes': outputs['detection_classes'],
+        'num_detections': outputs['num_detections'],
+        'source_id': labels['groundtruths']['source_id'],
+        'image_info': labels['image_info'],
+    }
+    if 'detection_outer_boxes' in outputs:
+      instance_predictions['detection_outer_boxes'] = outputs[
+          'detection_outer_boxes'
+      ]
+    if 'detection_masks' in outputs:
+      instance_predictions['detection_masks'] = outputs['detection_masks']
+
+    if self._task_config.use_coco_metrics:
+      logs[self.coco_metric.name] = (
+          labels['groundtruths'],
+          instance_predictions,
+      )
+    if self.task_config.use_wod_metrics:
+      logs[self.wod_metric.name] = (
+          labels['groundtruths'],
+          instance_predictions,
+      )
+
+    instance_labels = {
+        'boxes': labels['groundtruths']['boxes'],
+        'classes': labels['groundtruths']['classes'],
+        'is_crowds': labels['groundtruths']['is_crowds'],
+        'image_info': labels['image_info'],
+    }
+    if self.instance_box_perclass_metrics is not None:
+      self.instance_box_perclass_metrics.update_state(
+          y_true=instance_labels, y_pred=instance_predictions
+      )
+    if self.instance_mask_perclass_metrics is not None:
+      instance_labels['masks'] = labels['groundtruths']['masks']
+      self.instance_mask_perclass_metrics.update_state(
+          y_true=instance_labels, y_pred=instance_predictions
+      )
+
   def validation_step(self,
                       inputs: Tuple[Any, Any],
-                      model: tf.keras.Model,
+                      model: tf_keras.Model,
                       metrics: Optional[List[Any]] = None):
     """Validatation step.
 
@@ -425,67 +505,139 @@ class MaskRCNNTask(base_task.Task):
       A dictionary of logs.
     """
     images, labels = inputs
-
     outputs = model(
         images,
         anchor_boxes=labels['anchor_boxes'],
         image_shape=labels['image_info'][:, 1, :],
-        training=False)
+        training=False,
+    )
 
     logs = {self.loss: 0}
-    if self._task_config.use_coco_metrics:
-      coco_model_outputs = {
-          'detection_boxes': outputs['detection_boxes'],
-          'detection_scores': outputs['detection_scores'],
-          'detection_classes': outputs['detection_classes'],
-          'num_detections': outputs['num_detections'],
-          'source_id': labels['groundtruths']['source_id'],
-          'image_info': labels['image_info']
-      }
-      if self.task_config.model.include_mask:
-        if 'detection_outer_boxes' in outputs:
-          coco_model_outputs['detection_outer_boxes'] = (
-              outputs['detection_outer_boxes'])
-        coco_model_outputs['detection_masks'] = outputs['detection_masks']
-      logs.update(
-          {self.coco_metric.name: (labels['groundtruths'], coco_model_outputs)})
+    self._update_metrics(labels, outputs, logs)
 
-    if self.task_config.use_wod_metrics:
-      wod_model_outputs = {
-          'detection_boxes': outputs['detection_boxes'],
-          'detection_scores': outputs['detection_scores'],
-          'detection_classes': outputs['detection_classes'],
-          'num_detections': outputs['num_detections'],
-          'source_id': labels['groundtruths']['source_id'],
-          'image_info': labels['image_info']
-      }
+    if (
+        hasattr(self.task_config, 'allow_image_summary')
+        and self.task_config.allow_image_summary
+    ):
       logs.update(
-          {self.wod_metric.name: (labels['groundtruths'], wod_model_outputs)})
+          {'visualization': (tf.cast(images, dtype=tf.float32), outputs)}
+      )
+
     return logs
 
-  def aggregate_logs(self, state=None, step_outputs=None):
-    if self._task_config.use_coco_metrics:
-      if state is None:
+  def aggregate_logs(
+      self,
+      state: Optional[Any] = None,
+      step_outputs: Optional[Dict[str, Any]] = None,
+  ) -> Optional[Any]:
+    """Optional aggregation over logs returned from a validation step."""
+    if not state:
+      # The metrics which update state on CPU.
+      if self.task_config.use_coco_metrics:
         self.coco_metric.reset_states()
+      if self.task_config.use_wod_metrics:
+        self.wod_metric.reset_states()
+
+    if self.task_config.use_coco_metrics:
       self.coco_metric.update_state(
           step_outputs[self.coco_metric.name][0],
-          step_outputs[self.coco_metric.name][1])
-    if self._task_config.use_wod_metrics:
-      if state is None:
-        self.wod_metric.reset_states()
+          step_outputs[self.coco_metric.name][1],
+      )
+    if self.task_config.use_wod_metrics:
       self.wod_metric.update_state(
           step_outputs[self.wod_metric.name][0],
-          step_outputs[self.wod_metric.name][1])
-    if state is None:
+          step_outputs[self.wod_metric.name][1],
+      )
+
+    if 'visualization' in step_outputs:
+      # Update detection state for writing summary if there are artifacts for
+      # visualization.
+      if state is None:
+        state = {}
+      state.update(visualization_utils.update_detection_state(step_outputs))
+      # TODO(allenyan): Mapping `detection_masks` (w.r.t. the `gt_boxes`) back
+      # to full masks (w.r.t. the image). Disable mask visualization fow now.
+      state.pop('detection_masks', None)
+
+    if not state:
       # Create an arbitrary state to indicate it's not the first step in the
       # following calls to this function.
       state = True
     return state
 
-  def reduce_aggregated_logs(self, aggregated_logs, global_step=None):
+  def _reduce_instance_metrics(
+      self, logs: Dict[str, Any], use_masks: bool = False
+  ):
+    """Updates the per class and mean instance metrics in the logs."""
+    if use_masks:
+      instance_metrics = self.instance_mask_perclass_metrics
+      prefix = 'mask_'
+    else:
+      instance_metrics = self.instance_box_perclass_metrics
+      prefix = ''
+    if instance_metrics is None:
+      raise ValueError(
+          'No instance metrics defined when use_masks is %s' % use_masks
+      )
+    result = instance_metrics.result()
+    iou_thresholds = instance_metrics.get_config()['iou_thresholds']
+
+    for ap_key in instance_metrics.get_average_precision_metrics_keys():
+      # (num_iou_thresholds, num_classes)
+      per_class_ap = tf.where(
+          result['valid_classes'], result[ap_key], tf.zeros_like(result[ap_key])
+      )
+      # (num_iou_thresholds,)
+      mean_ap_by_iou = tf.math.divide_no_nan(
+          tf.reduce_sum(per_class_ap, axis=-1),
+          tf.reduce_sum(
+              tf.cast(result['valid_classes'], dtype=per_class_ap.dtype),
+              axis=-1,
+          ),
+      )
+      logs[f'{prefix}{ap_key}'] = tf.reduce_mean(mean_ap_by_iou)
+      for j, iou in enumerate(iou_thresholds):
+        if int(iou * 100) in {50, 75}:
+          logs[f'{prefix}{ap_key}{int(iou * 100)}'] = mean_ap_by_iou[j]
+
+      if self.task_config.per_category_metrics:
+        # (num_classes,)
+        per_class_mean_ap = tf.reduce_mean(per_class_ap, axis=0)
+        valid_classes = result['valid_classes'].numpy()
+        for k in range(self.task_config.model.num_classes):
+          if valid_classes[k]:
+            logs[f'{prefix}{ap_key} ByCategory/{k}'] = per_class_mean_ap[k]
+            for j, iou in enumerate(iou_thresholds):
+              if int(iou * 100) in {50, 75}:
+                logs[f'{prefix}{ap_key}{int(iou * 100)} ByCategory/{k}'] = (
+                    per_class_ap[j][k]
+                )
+
+  def reduce_aggregated_logs(
+      self,
+      aggregated_logs: Dict[str, Any],
+      global_step: Optional[tf.Tensor] = None,
+  ) -> Dict[str, tf.Tensor]:
+    """Optional reduce of aggregated logs over validation steps."""
     logs = {}
-    if self._task_config.use_coco_metrics:
+    # The metrics which update state on device.
+    if self.instance_box_perclass_metrics is not None:
+      self._reduce_instance_metrics(logs, use_masks=False)
+      self.instance_box_perclass_metrics.reset_state()
+    if self.instance_mask_perclass_metrics is not None:
+      self._reduce_instance_metrics(logs, use_masks=True)
+      self.instance_mask_perclass_metrics.reset_state()
+    # The metrics which update state on CPU.
+    if self.task_config.use_coco_metrics:
       logs.update(self.coco_metric.result())
-    if self._task_config.use_wod_metrics:
+    if self.task_config.use_wod_metrics:
       logs.update(self.wod_metric.result())
+
+    # Add visualization for summary.
+    if isinstance(aggregated_logs, dict) and 'image' in aggregated_logs:
+      validation_outputs = visualization_utils.visualize_outputs(
+          logs=aggregated_logs, task_config=self.task_config
+      )
+      logs.update(validation_outputs)
+
     return logs
