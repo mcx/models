@@ -1,4 +1,4 @@
-# Copyright 2022 The TensorFlow Authors. All Rights Reserved.
+# Copyright 2024 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -17,14 +17,19 @@
 from typing import Any, Dict, Optional, Tuple, Union
 
 import numpy as np
-import tensorflow as tf
+import tensorflow as tf, tf_keras
 
 from official.vision.ops import box_ops
 from official.vision.ops import mask_ops
 
 
-class AveragePrecision(tf.keras.layers.Layer):
+class AveragePrecision(tf_keras.layers.Layer):
   """The algorithm which computes average precision from P-R curve."""
+
+  def __init__(self, *args, **kwargs):
+    # Enforce the `AveragePrecision` to operate in `float32` given the
+    # implementation requirements.
+    super().__init__(*args, dtype=tf.float32, **kwargs)
 
   def call(self, precisions, recalls):
     """Computes average precision."""
@@ -174,8 +179,13 @@ class VOC2010AveragePrecision(AveragePrecision):
     return tf.reduce_sum(p * delta_r[..., :-1], axis=-1)
 
 
-class MatchingAlgorithm(tf.keras.layers.Layer):
+class MatchingAlgorithm(tf_keras.layers.Layer):
   """The algorithm which matches detections to ground truths."""
+
+  def __init__(self, *args, **kwargs):
+    # Enforce the `MachingAlgorithm` to operate in `float32` given the
+    # implementation requirements.
+    super().__init__(*args, dtype=tf.float32, **kwargs)
 
   def call(
       self,
@@ -287,7 +297,8 @@ class COCOMatchingAlgorithm(MatchingAlgorithm):
       # in this step. It's fine because it will be masked out in the next step.
       # (batch_size, num_iou_thresholds)
       matched_gt_with_max_iou = tf.argmax(
-          tf.cast(gt_matches_detection, tf.float32) * gt_ious[:, :, tf.newaxis],
+          tf.cast(gt_matches_detection, gt_ious.dtype)
+          * gt_ious[:, :, tf.newaxis],
           axis=1,
           output_type=tf.int32,
       )
@@ -454,7 +465,7 @@ def _count_detection_type(
   return count
 
 
-class InstanceMetrics(tf.keras.metrics.Metric):
+class InstanceMetrics(tf_keras.metrics.Metric):
   """Reports the metrics of instance detection & segmentation."""
 
   def __init__(
@@ -562,8 +573,9 @@ class InstanceMetrics(tf.keras.metrics.Metric):
 
   def reset_state(self):
     """Resets all of the metric state variables."""
-    for v in self.variables:
-      tf.keras.backend.set_value(v, np.zeros(v.shape))
+    self.tp_count.assign(tf.zeros_like(self.tp_count))
+    self.fp_count.assign(tf.zeros_like(self.fp_count))
+    self.gt_count.assign(tf.zeros_like(self.gt_count))
 
   def update_state(
       self, y_true: Dict[str, tf.Tensor], y_pred: Dict[str, tf.Tensor]
@@ -598,6 +610,10 @@ class InstanceMetrics(tf.keras.metrics.Metric):
           detection_boxes, gt_boxes
       )
     else:
+      # Use outer boxes to generate the masks if available.
+      if 'detection_outer_boxes' in y_pred:
+        detection_boxes = tf.cast(y_pred['detection_outer_boxes'], tf.float32)
+
       # (batch_size, num_detections, mask_height, mask_width)
       detection_masks = tf.cast(y_pred['detection_masks'], tf.float32)
       # (batch_size, num_gts, gt_mask_height, gt_mask_width)

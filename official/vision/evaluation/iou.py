@@ -1,4 +1,4 @@
-# Copyright 2022 The TensorFlow Authors. All Rights Reserved.
+# Copyright 2024 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -17,10 +17,10 @@
 from typing import Any, Dict, Optional, Sequence, Union
 
 import numpy as np
-import tensorflow as tf
+import tensorflow as tf, tf_keras
 
 
-class PerClassIoU(tf.keras.metrics.MeanIoU):
+class PerClassIoU(tf_keras.metrics.MeanIoU):
   """Computes the per-class Intersection-Over-Union metric.
 
   This metric computes the IOU for each semantic class.
@@ -39,7 +39,7 @@ class PerClassIoU(tf.keras.metrics.MeanIoU):
   >>> # sum_row = [2, 2], sum_col = [2, 2], true_positives = [1, 1]
   >>> # iou = true_positives / (sum_row + sum_col - true_positives))
   >>> # result = [(1 / (2 + 2 - 1), 1 / (2 + 2 - 1)] = 0.33
-  >>> m = tf.keras.metrics.MeanIoU(num_classes=2)
+  >>> m = tf_keras.metrics.MeanIoU(num_classes=2)
   >>> m.update_state([0, 0, 1, 1], [0, 1, 0, 1])
   >>> m.result().numpy()
   [0.33333334, 0.33333334]
@@ -61,10 +61,10 @@ class PerClassIoU(tf.keras.metrics.MeanIoU):
     return tf.math.divide_no_nan(true_positives, denominator)
 
 
-class PerClassIoUV2(tf.keras.metrics.Metric):
+class PerClassIoUV2(tf_keras.metrics.Metric):
   """Computes the per-class Intersection-Over-Union metric.
 
-  This implementation converts predictions and ground truth to binary masks,
+  This implementation converts predictions and ground-truth to binary masks,
   and uses logical AND and OR to compute intersection and union, which is much
   faster than the PerClassIoU (using confusion matrix) above on TPU, but slower
   on CPU and GPU.
@@ -110,8 +110,10 @@ class PerClassIoUV2(tf.keras.metrics.Metric):
 
   def reset_state(self):
     """Resets all of the metric state variables."""
-    for v in self.variables:
-      tf.keras.backend.set_value(v, np.zeros(v.shape))
+    self.intersection_per_class.assign(
+        tf.zeros_like(self.intersection_per_class)
+    )
+    self.union_per_class.assign(tf.zeros_like(self.union_per_class))
 
   def update_state(self, y_true: tf.Tensor, y_pred: tf.Tensor):
     """Updates metric state by accumulating the variables.

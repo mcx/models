@@ -1,4 +1,4 @@
-# Copyright 2022 The TensorFlow Authors. All Rights Reserved.
+# Copyright 2024 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,10 +14,10 @@
 
 """Semantic segmentation configuration definition."""
 import dataclasses
+import math
 import os
 from typing import List, Optional, Sequence, Union
 
-import numpy as np
 from official.core import config_definitions as cfg
 from official.core import exp_factory
 from official.modeling import hyperparams
@@ -25,10 +25,7 @@ from official.modeling import optimization
 from official.vision.configs import common
 from official.vision.configs import decoders
 from official.vision.configs import backbones
-
-# These values are from ImageNet dataset.
-_RGB_MEAN = [123.675, 116.28, 103.53]
-_RGB_STDDEV = [58.395, 57.12, 57.375]
+from official.vision.ops import preprocess_ops
 
 
 @dataclasses.dataclass
@@ -51,19 +48,25 @@ class DenseFeatureConfig(hyperparams.Config):
   """
   feature_name: str = 'image/encoded'
   num_channels: int = 3
-  mean: List[float] = dataclasses.field(default_factory=lambda: _RGB_MEAN)
-  stddev: List[float] = dataclasses.field(default_factory=lambda: _RGB_STDDEV)
+  mean: List[float] = dataclasses.field(
+      default_factory=lambda: preprocess_ops.MEAN_RGB
+  )
+  stddev: List[float] = dataclasses.field(
+      default_factory=lambda: preprocess_ops.STDDEV_RGB
+  )
 
 
 @dataclasses.dataclass
 class DataConfig(cfg.DataConfig):
   """Input config for training."""
-  image_feature: DenseFeatureConfig = DenseFeatureConfig()
+  image_feature: DenseFeatureConfig = dataclasses.field(
+      default_factory=DenseFeatureConfig
+  )
   output_size: List[int] = dataclasses.field(default_factory=list)
   # If crop_size is specified, image will be resized first to
   # output_size, then crop of size crop_size will be cropped.
   crop_size: List[int] = dataclasses.field(default_factory=list)
-  input_path: Union[Sequence[str], str, hyperparams.Config] = ''
+  input_path: Union[Sequence[str], str, hyperparams.Config] = None
   weights: Optional[hyperparams.Config] = None
   global_batch_size: int = 0
   is_training: bool = True
@@ -82,9 +85,15 @@ class DataConfig(cfg.DataConfig):
   aug_policy: Optional[str] = None
   drop_remainder: bool = True
   file_type: str = 'tfrecord'
-  decoder: Optional[common.DataDecoder] = common.DataDecoder()
+  decoder: Optional[common.DataDecoder] = dataclasses.field(
+      default_factory=common.DataDecoder
+  )
   additional_dense_features: List[DenseFeatureConfig] = dataclasses.field(
       default_factory=list)
+  # If `centered_crop` is set to True, then resized crop
+  # (if smaller than padded size) is place in the center of the image.
+  # Default behaviour is to place it at left top corner.
+  centered_crop: bool = False
 
 
 @dataclasses.dataclass
@@ -96,6 +105,7 @@ class SegmentationHead(hyperparams.Config):
   use_depthwise_convolution: bool = False
   prediction_kernel_size: int = 1
   upsample_factor: int = 1
+  logit_activation: Optional[str] = None  # None, 'sigmoid', or 'softmax'.
   feature_fusion: Optional[
       str] = None  # None, deeplabv3plus, panoptic_fpn_fusion or pyramid_fusion
   # deeplabv3plus feature fusion params
@@ -124,12 +134,19 @@ class SemanticSegmentationModel(hyperparams.Config):
   input_size: List[int] = dataclasses.field(default_factory=list)
   min_level: int = 3
   max_level: int = 6
-  head: SegmentationHead = SegmentationHead()
-  backbone: backbones.Backbone = backbones.Backbone(
-      type='resnet', resnet=backbones.ResNet())
-  decoder: decoders.Decoder = decoders.Decoder(type='identity')
+  head: SegmentationHead = dataclasses.field(default_factory=SegmentationHead)
+  backbone: backbones.Backbone = dataclasses.field(
+      default_factory=lambda: backbones.Backbone(  # pylint: disable=g-long-lambda
+          type='resnet', resnet=backbones.ResNet()
+      )
+  )
+  decoder: decoders.Decoder = dataclasses.field(
+      default_factory=lambda: decoders.Decoder(type='identity')
+  )
   mask_scoring_head: Optional[MaskScoringHead] = None
-  norm_activation: common.NormActivation = common.NormActivation()
+  norm_activation: common.NormActivation = dataclasses.field(
+      default_factory=common.NormActivation
+  )
 
 
 @dataclasses.dataclass
@@ -166,18 +183,25 @@ class ExportConfig(hyperparams.Config):
 @dataclasses.dataclass
 class SemanticSegmentationTask(cfg.TaskConfig):
   """The model config."""
-  model: SemanticSegmentationModel = SemanticSegmentationModel()
-  train_data: DataConfig = DataConfig(is_training=True)
-  validation_data: DataConfig = DataConfig(is_training=False)
-  losses: Losses = Losses()
-  evaluation: Evaluation = Evaluation()
+  model: SemanticSegmentationModel = dataclasses.field(
+      default_factory=SemanticSegmentationModel
+  )
+  train_data: DataConfig = dataclasses.field(
+      default_factory=lambda: DataConfig(is_training=True)
+  )
+  validation_data: DataConfig = dataclasses.field(
+      default_factory=lambda: DataConfig(is_training=False)
+  )
+  losses: Losses = dataclasses.field(default_factory=Losses)
+  evaluation: Evaluation = dataclasses.field(default_factory=Evaluation)
   train_input_partition_dims: List[int] = dataclasses.field(
       default_factory=list)
   eval_input_partition_dims: List[int] = dataclasses.field(default_factory=list)
   init_checkpoint: Optional[str] = None
   init_checkpoint_modules: Union[
       str, List[str]] = 'all'  # all, backbone, and/or decoder
-  export_config: ExportConfig = ExportConfig()
+  export_config: ExportConfig = dataclasses.field(default_factory=ExportConfig)
+  allow_image_summary: bool = True
 
 
 @exp_factory.register_config_factory('semantic_segmentation')
@@ -208,7 +232,7 @@ def seg_deeplabv3_pascal() -> cfg.ExperimentConfig:
   aspp_dilation_rates = [12, 24, 36]  # [6, 12, 18] if output_stride = 16
   multigrid = [1, 2, 4]
   stem_type = 'v1'
-  level = int(np.math.log2(output_stride))
+  level = int(math.log2(output_stride))
   config = cfg.ExperimentConfig(
       task=SemanticSegmentationTask(
           model=SemanticSegmentationModel(
@@ -300,7 +324,7 @@ def seg_deeplabv3plus_pascal() -> cfg.ExperimentConfig:
   aspp_dilation_rates = [6, 12, 18]
   multigrid = [1, 2, 4]
   stem_type = 'v1'
-  level = int(np.math.log2(output_stride))
+  level = int(math.log2(output_stride))
   config = cfg.ExperimentConfig(
       task=SemanticSegmentationTask(
           model=SemanticSegmentationModel(
@@ -467,7 +491,7 @@ def mnv2_deeplabv3_pascal() -> cfg.ExperimentConfig:
   steps_per_epoch = PASCAL_TRAIN_EXAMPLES // train_batch_size
   output_stride = 16
   aspp_dilation_rates = []
-  level = int(np.math.log2(output_stride))
+  level = int(math.log2(output_stride))
   pool_kernel_size = []
 
   config = cfg.ExperimentConfig(
@@ -568,7 +592,7 @@ def seg_deeplabv3plus_cityscapes() -> cfg.ExperimentConfig:
   aspp_dilation_rates = [6, 12, 18]
   multigrid = [1, 2, 4]
   stem_type = 'v1'
-  level = int(np.math.log2(output_stride))
+  level = int(math.log2(output_stride))
   config = cfg.ExperimentConfig(
       task=SemanticSegmentationTask(
           model=SemanticSegmentationModel(
@@ -669,7 +693,7 @@ def mnv2_deeplabv3_cityscapes() -> cfg.ExperimentConfig:
   aspp_dilation_rates = []
   pool_kernel_size = [512, 1024]
 
-  level = int(np.math.log2(output_stride))
+  level = int(math.log2(output_stride))
   config = cfg.ExperimentConfig(
       task=SemanticSegmentationTask(
           model=SemanticSegmentationModel(

@@ -1,4 +1,4 @@
-# Copyright 2022 The TensorFlow Authors. All Rights Reserved.
+# Copyright 2024 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -43,6 +43,13 @@ class YoloDecoder(hyperparams.Config):
 
 
 @dataclasses.dataclass
+class YoloV7(hyperparams.Config):
+  model_id: str = 'yolov7'
+  use_separable_conv: bool = False
+
+
+@dataclasses.dataclass
 class Decoder(decoders.Decoder):
   type: Optional[str] = 'yolo_decoder'
-  yolo_decoder: YoloDecoder = YoloDecoder()
+  yolo_decoder: YoloDecoder = dataclasses.field(default_factory=YoloDecoder)
+  yolov7: YoloV7 = dataclasses.field(default_factory=YoloV7)

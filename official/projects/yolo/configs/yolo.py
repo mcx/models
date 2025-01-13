@@ -1,4 +1,4 @@
-# Copyright 2022 The TensorFlow Authors. All Rights Reserved.
+# Copyright 2024 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -76,8 +76,12 @@ class TfExampleDecoderLabelMap(hyperparams.Config):
 @dataclasses.dataclass
 class DataDecoder(hyperparams.OneOfConfig):
   type: Optional[str] = 'simple_decoder'
-  simple_decoder: TfExampleDecoder = TfExampleDecoder()
-  label_map_decoder: TfExampleDecoderLabelMap = TfExampleDecoderLabelMap()
+  simple_decoder: TfExampleDecoder = dataclasses.field(
+      default_factory=TfExampleDecoder
+  )
+  label_map_decoder: TfExampleDecoderLabelMap = dataclasses.field(
+      default_factory=TfExampleDecoderLabelMap
+  )
 
 
 @dataclasses.dataclass
@@ -86,6 +90,7 @@ class Mosaic(hyperparams.Config):
   mosaic9_frequency: float = 0.0
   mixup_frequency: float = 0.0
   mosaic_center: float = 0.2
+  mosaic9_center: float = 0.33
   mosaic_crop_mode: Optional[str] = None
   aug_scale_min: float = 1.0
   aug_scale_max: float = 1.0
@@ -111,7 +116,7 @@ class Parser(hyperparams.Config):
   best_match_only: bool = False
   anchor_thresh: float = -0.01
   area_thresh: float = 0.1
-  mosaic: Mosaic = Mosaic()
+  mosaic: Mosaic = dataclasses.field(default_factory=Mosaic)
 
 
 @dataclasses.dataclass
@@ -121,11 +126,10 @@ class DataConfig(cfg.DataConfig):
   input_path: str = ''
   tfds_name: str = ''
   tfds_split: str = ''
-  global_batch_size: int = 1
   is_training: bool = True
   dtype: str = 'float16'
-  decoder: DataDecoder = DataDecoder()
-  parser: Parser = Parser()
+  decoder: DataDecoder = dataclasses.field(default_factory=DataDecoder)
+  parser: Parser = dataclasses.field(default_factory=Parser)
   shuffle_buffer_size: int = 10000
   tfds_download: bool = True
   cache: bool = False
@@ -141,17 +145,21 @@ class YoloHead(hyperparams.Config):
 
 @dataclasses.dataclass
 class YoloDetectionGenerator(hyperparams.Config):
+  apply_nms: bool = True
   box_type: FPNConfig = dataclasses.field(
       default_factory=_build_dict(MIN_LEVEL, MAX_LEVEL, 'original'))
   scale_xy: FPNConfig = dataclasses.field(
       default_factory=_build_dict(MIN_LEVEL, MAX_LEVEL, 1.0))
   path_scales: FPNConfig = dataclasses.field(
       default_factory=_build_path_scales(MIN_LEVEL, MAX_LEVEL))
-  nms_type: str = 'greedy'
+  # Choose from v1, v2, iou and greedy.
+  nms_version: str = 'greedy'
   iou_thresh: float = 0.001
   nms_thresh: float = 0.6
   max_boxes: int = 200
   pre_nms_points: int = 5000
+  # Only works when nms_version='v2'.
+  use_class_agnostic_nms: Optional[bool] = False
 
 
 @dataclasses.dataclass
@@ -225,21 +233,32 @@ class AnchorBoxes(hyperparams.Config):
 class Yolo(hyperparams.Config):
   input_size: Optional[List[int]] = dataclasses.field(
       default_factory=lambda: [512, 512, 3])
-  backbone: backbones.Backbone = backbones.Backbone(
-      type='darknet', darknet=backbones.Darknet(model_id='cspdarknet53'))
-  decoder: decoders.Decoder = decoders.Decoder(
-      type='yolo_decoder',
-      yolo_decoder=decoders.YoloDecoder(version='v4', type='regular'))
-  head: YoloHead = YoloHead()
-  detection_generator: YoloDetectionGenerator = YoloDetectionGenerator()
-  loss: YoloLoss = YoloLoss()
-  norm_activation: common.NormActivation = common.NormActivation(
-      activation='mish',
-      use_sync_bn=True,
-      norm_momentum=0.99,
-      norm_epsilon=0.001)
+  backbone: backbones.Backbone = dataclasses.field(
+      default_factory=lambda: backbones.Backbone(  # pylint: disable=g-long-lambda
+          type='darknet', darknet=backbones.Darknet(model_id='cspdarknet53')
+      )
+  )
+  decoder: decoders.Decoder = dataclasses.field(
+      default_factory=lambda: decoders.Decoder(  # pylint: disable=g-long-lambda
+          type='yolo_decoder',
+          yolo_decoder=decoders.YoloDecoder(version='v4', type='regular'),
+      )
+  )
+  head: YoloHead = dataclasses.field(default_factory=YoloHead)
+  detection_generator: YoloDetectionGenerator = dataclasses.field(
+      default_factory=YoloDetectionGenerator
+  )
+  loss: YoloLoss = dataclasses.field(default_factory=YoloLoss)
+  norm_activation: common.NormActivation = dataclasses.field(
+      default_factory=lambda: common.NormActivation(  # pylint: disable=g-long-lambda
+          activation='mish',
+          use_sync_bn=True,
+          norm_momentum=0.99,
+          norm_epsilon=0.001,
+      )
+  )
   num_classes: int = 80
-  anchor_boxes: AnchorBoxes = AnchorBoxes()
+  anchor_boxes: AnchorBoxes = dataclasses.field(default_factory=AnchorBoxes)
   darknet_based_model: bool = False
 
 
@@ -247,9 +266,13 @@ class Yolo(hyperparams.Config):
 class YoloTask(cfg.TaskConfig):
   per_category_metrics: bool = False
   smart_bias_lr: float = 0.0
-  model: Yolo = Yolo()
-  train_data: DataConfig = DataConfig(is_training=True)
-  validation_data: DataConfig = DataConfig(is_training=False)
+  model: Yolo = dataclasses.field(default_factory=Yolo)
+  train_data: DataConfig = dataclasses.field(
+      default_factory=lambda: DataConfig(is_training=True)
+  )
+  validation_data: DataConfig = dataclasses.field(
+      default_factory=lambda: DataConfig(is_training=False)
+  )
   weight_decay: float = 0.0
   annotation_file: Optional[str] = None
   init_checkpoint: Optional[str] = None
@@ -417,8 +440,7 @@ def scaled_yolo() -> cfg.ExperimentConfig:
           smart_bias_lr=0.1,
           init_checkpoint_modules='',
           weight_decay=0.0,
-          annotation_file=os.path.join(COCO_INPUT_PATH_BASE,
-                                       'instances_val2017.json'),
+          annotation_file=None,
           model=Yolo(
               darknet_based_model=False,
               norm_activation=common.NormActivation(

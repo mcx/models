@@ -1,4 +1,4 @@
-# Copyright 2022 The TensorFlow Authors. All Rights Reserved.
+# Copyright 2024 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -16,7 +16,7 @@
 
 from typing import Any, Dict, List, Optional, Tuple
 
-import tensorflow as tf
+import tensorflow as tf, tf_keras
 
 from official.projects.panoptic.modeling.layers import paste_masks
 from official.vision.ops import spatial_transform_ops
@@ -43,7 +43,7 @@ def _batch_count_ones(masks: tf.Tensor,
   return tf.reduce_sum(tf.cast(masks, dtype), axis=[-2, -1])
 
 
-class PanopticSegmentationGenerator(tf.keras.layers.Layer):
+class PanopticSegmentationGenerator(tf_keras.layers.Layer):
   """Panoptic segmentation generator layer."""
 
   def __init__(
@@ -349,7 +349,7 @@ class PanopticSegmentationGenerator(tf.keras.layers.Layer):
     return cls(**config)
 
 
-class PanopticSegmentationGeneratorV2(tf.keras.layers.Layer):
+class PanopticSegmentationGeneratorV2(tf_keras.layers.Layer):
   """Panoptic segmentation generator layer V2."""
 
   def __init__(self,
@@ -426,11 +426,11 @@ class PanopticSegmentationGeneratorV2(tf.keras.layers.Layer):
     # (batch_size, num_rois)
     detection_classes = tf.cast(inputs['detection_classes'], tf.int32)
     # (batch_size, num_rois)
-    detection_scores = tf.cast(inputs['detection_scores'], tf.float32)
+    detection_scores = inputs['detection_scores']
     # (batch_size, num_rois, mask_height, mask_width)
-    detections_masks = tf.cast(inputs['detection_masks'], tf.float32)
+    detections_masks = inputs['detection_masks']
     # (batch_size, height, width, num_semantic_classes)
-    segmentation_outputs = tf.cast(inputs['segmentation_outputs'], tf.float32)
+    segmentation_outputs = inputs['segmentation_outputs']
 
     if self._rescale_predictions:
       # (batch_size, 2)

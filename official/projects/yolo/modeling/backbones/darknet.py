@@ -1,4 +1,4 @@
-# Copyright 2022 The TensorFlow Authors. All Rights Reserved.
+# Copyright 2024 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -37,7 +37,7 @@ Darknets are used mainly for object detection in:
 
 import collections
 
-import tensorflow as tf
+import tensorflow as tf, tf_keras
 
 from official.modeling import hyperparams
 from official.projects.yolo.modeling.layers import nn_blocks
@@ -104,7 +104,7 @@ class LayerBuilder:
   def __init__(self):
     self._layer_dict = {
         'ConvBN': (nn_blocks.ConvBN, self.conv_bn_config_todict),
-        'MaxPool': (tf.keras.layers.MaxPool2D, self.maxpool_config_todict)
+        'MaxPool': (tf_keras.layers.MaxPool2D, self.maxpool_config_todict)
     }
 
   def conv_bn_config_todict(self, config, kwargs):
@@ -372,13 +372,13 @@ BACKBONES = {
 }
 
 
-class Darknet(tf.keras.Model):
+class Darknet(tf_keras.Model):
   """The Darknet backbone architecture."""
 
   def __init__(
       self,
       model_id='darknet53',
-      input_specs=tf.keras.layers.InputSpec(shape=[None, None, None, 3]),
+      input_specs=tf_keras.layers.InputSpec(shape=[None, None, None, 3]),
       min_level=None,
       max_level=5,
       width_scale=1.0,
@@ -400,7 +400,7 @@ class Darknet(tf.keras.Model):
 
     self._model_name = model_id
     self._splits = splits
-    self._input_shape = input_specs
+    self._input_specs = input_specs
     self._registry = LayerBuilder()
 
     # default layer look up
@@ -435,13 +435,11 @@ class Darknet(tf.keras.Model):
         'name': None
     }
 
-    inputs = tf.keras.layers.Input(shape=self._input_shape.shape[1:])
+    inputs = tf_keras.Input(shape=input_specs.shape[1:])
     output = self._build_struct(layer_specs, inputs)
-    super().__init__(inputs=inputs, outputs=output, name=self._model_name)
-
-  @property
-  def input_specs(self):
-    return self._input_shape
+    super().__init__(
+        inputs=inputs, outputs=output, name=self._model_name, **kwargs
+    )
 
   @property
   def output_specs(self):
@@ -536,25 +534,28 @@ class Darknet(tf.keras.Model):
       x = nn_blocks.DarkResidual(
           filters=config.filters // scale_filters,
           filter_scale=residual_filter_scale,
-          **self._default_dict)(
-              x)
+          **self._default_dict,
+      )(x)
 
     for i in range(dilated_reps, config.repetitions):
       self._default_dict['dilation_rate'] = max(
-          1, self._default_dict['dilation_rate'] // 2)
-      self._default_dict[
-          'name'] = f"{name}_{i}_degridded_{self._default_dict['dilation_rate']}"
+          1, self._default_dict['dilation_rate'] // 2
+      )
+      self._default_dict['name'] = (
+          f"{name}_{i}_degridded_{self._default_dict['dilation_rate']}"
+      )
       x = nn_blocks.DarkResidual(
           filters=config.filters // scale_filters,
           filter_scale=residual_filter_scale,
-          **self._default_dict)(
-              x)
+          **self._default_dict,
+      )(x)
 
     self._default_dict['name'] = f'{name}_csp_connect'
     output = nn_blocks.CSPConnect(
         filters=config.filters,
         filter_scale=csp_filter_scale,
-        **self._default_dict)([x, x_route])
+        **self._default_dict,
+    )([x, x_route])
     self._default_dict['activation'] = self._activation
     self._default_dict['name'] = None
     return output
@@ -570,7 +571,7 @@ class Darknet(tf.keras.Model):
     return x, x_route
 
   def _tiny_stack(self, inputs, config, name):
-    x = tf.keras.layers.MaxPool2D(
+    x = tf_keras.layers.MaxPool2D(
         pool_size=2,
         strides=config.strides,
         padding='same',
@@ -601,25 +602,28 @@ class Darknet(tf.keras.Model):
       self._default_dict['dilation_rate'] = 1
 
     x = nn_blocks.DarkResidual(
-        filters=config.filters, downsample=True, **self._default_dict)(
-            inputs)
+        filters=config.filters, downsample=True, **self._default_dict
+    )(inputs)
 
-    dilated_reps = config.repetitions - self._default_dict[
-        'dilation_rate'] // 2 - 1
+    dilated_reps = (
+        config.repetitions - self._default_dict['dilation_rate'] // 2 - 1
+    )
     for i in range(dilated_reps):
       self._default_dict['name'] = f'{name}_{i}'
-      x = nn_blocks.DarkResidual(
-          filters=config.filters, **self._default_dict)(
-              x)
+      x = nn_blocks.DarkResidual(filters=config.filters, **self._default_dict)(
+          x
+      )
 
     for i in range(dilated_reps, config.repetitions - 1):
-      self._default_dict[
-          'dilation_rate'] = self._default_dict['dilation_rate'] // 2
-      self._default_dict[
-          'name'] = f"{name}_{i}_degridded_{self._default_dict['dilation_rate']}"
-      x = nn_blocks.DarkResidual(
-          filters=config.filters, **self._default_dict)(
-              x)
+      self._default_dict['dilation_rate'] = (
+          self._default_dict['dilation_rate'] // 2
+      )
+      self._default_dict['name'] = (
+          f"{name}_{i}_degridded_{self._default_dict['dilation_rate']}"
+      )
+      x = nn_blocks.DarkResidual(filters=config.filters, **self._default_dict)(
+          x
+      )
 
     self._default_dict['activation'] = self._activation
     self._default_dict['name'] = None
@@ -672,11 +676,11 @@ class Darknet(tf.keras.Model):
 
 @factory.register_backbone_builder('darknet')
 def build_darknet(
-    input_specs: tf.keras.layers.InputSpec,
+    input_specs: tf_keras.layers.InputSpec,
     backbone_config: hyperparams.Config,
     norm_activation_config: hyperparams.Config,
-    l2_regularizer: tf.keras.regularizers.Regularizer = None
-) -> tf.keras.Model:  # pytype: disable=annotation-type-mismatch  # typed-keras
+    l2_regularizer: tf_keras.regularizers.Regularizer = None
+) -> tf_keras.Model:  # pytype: disable=annotation-type-mismatch  # typed-keras
   """Builds darknet."""
 
   backbone_config = backbone_config.get()
