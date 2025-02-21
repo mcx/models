@@ -1,4 +1,4 @@
-# Copyright 2022 The TensorFlow Authors. All Rights Reserved.
+# Copyright 2024 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -16,7 +16,7 @@
 
 from typing import List
 
-import tensorflow as tf
+import tensorflow as tf, tf_keras
 
 from official.core import config_definitions as cfg
 from official.projects.panoptic.modeling import panoptic_maskrcnn_model
@@ -29,7 +29,7 @@ class PanopticSegmentationModule(detection.DetectionModule):
   def __init__(self,
                params: cfg.ExperimentConfig,
                *,
-               model: tf.keras.Model,
+               model: tf_keras.Model,
                batch_size: int,
                input_image_size: List[int],
                num_channels: int = 3):
@@ -133,7 +133,10 @@ class PanopticSegmentationModule(detection.DetectionModule):
     masks = detections['segmentation_outputs']
     masks = tf.image.resize(masks, self._input_image_size, method='bilinear')
     classes = tf.math.argmax(masks, axis=-1)
-    scores = tf.nn.softmax(masks, axis=-1)
+    if self.params.task.losses.semantic_segmentation_use_binary_cross_entropy:
+      scores = tf.nn.sigmoid(masks)
+    else:
+      scores = tf.nn.softmax(masks, axis=-1)
     final_outputs.update({
         'detection_masks': detections['detection_masks'],
         'semantic_logits': masks,

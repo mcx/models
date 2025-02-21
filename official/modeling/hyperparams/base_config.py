@@ -1,4 +1,4 @@
-# Copyright 2022 The TensorFlow Authors. All Rights Reserved.
+# Copyright 2024 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -18,11 +18,12 @@ import copy
 import dataclasses
 import functools
 import inspect
+import types
 import typing
 from typing import Any, List, Mapping, Optional, Type, Union
 
 from absl import logging
-import tensorflow as tf
+import tensorflow as tf, tf_keras
 import yaml
 
 from official.modeling.hyperparams import params_dict
@@ -58,8 +59,13 @@ def bind(config_cls):
 
 
 def _is_optional(field):
-  return typing.get_origin(field) is Union and type(None) in typing.get_args(
-      field)
+  # Two styles of annotating optional fields:
+  #   Optional[T] -> typing.Union
+  #   T | None    -> types.UnionType
+  is_union = typing.get_origin(field) in (Union, types.UnionType)
+  # An optional field is a union of a type, and NoneType.
+  args = typing.get_args(field)
+  return is_union and len(args) == 2 and type(None) in args
 
 
 @dataclasses.dataclass
@@ -94,6 +100,20 @@ class Config(params_dict.ParamsDict):
   @property
   def BUILDER(self):
     return self._BUILDER
+
+  @classmethod
+  def _get_annotations(cls):
+    """Returns valid annotations.
+
+    Note: this is similar to dataclasses.__annotations__ except it also includes
+      annotations from its parent classes.
+    """
+    all_annotations = typing.get_type_hints(cls)
+    # Removes Config class annotation from the value, e.g., default_params,
+    # restrictions, etc.
+    for k in Config.__annotations__:
+      del all_annotations[k]
+    return all_annotations
 
   @classmethod
   def _isvalidsequence(cls, v):
@@ -156,11 +176,15 @@ class Config(params_dict.ParamsDict):
       raise TypeError('Unknown type: {!r}'.format(type(v)))
 
   @classmethod
-  def _get_subconfig_type(cls, k) -> Type[params_dict.ParamsDict]:
+  def _get_subconfig_type(
+      cls, k, subconfig_type=None
+  ) -> Type[params_dict.ParamsDict]:
     """Get element type by the field name.
 
     Args:
       k: the key/name of the field.
+      subconfig_type: default subconfig_type. If None, it is set to
+        Config.
 
     Returns:
       Config as default. If a type annotation is found for `k`,
@@ -168,31 +192,31 @@ class Config(params_dict.ParamsDict):
       2) returns the element type if the annotation of `k` is List[SubType]
          or Tuple[SubType].
     """
-    subconfig_type = Config
-    if k in cls.__annotations__:
+    if not subconfig_type:
+      subconfig_type = Config
+
+    def _is_subtype(x, target) -> bool:
+      return isinstance(x, type) and issubclass(x, target)
+
+    annotations = cls._get_annotations()
+    if k in annotations:
       # Directly Config subtype.
-      type_annotation = cls.__annotations__[k]  # pytype: disable=invalid-annotation
+      type_annotation = annotations[k]
       i = 0
       # Loop for striping the Optional annotation.
       traverse_in = True
       while traverse_in:
         i += 1
-        if (isinstance(type_annotation, type) and
-            issubclass(type_annotation, Config)):
+        if _is_subtype(type_annotation, Config):
           subconfig_type = type_annotation
           break
         else:
-          # Check if the field is a sequence of subtypes.
-          field_type = typing.get_origin(type_annotation)
-          if (isinstance(field_type, type) and
-              issubclass(field_type, cls.SEQUENCE_TYPES)):
-            element_type = typing.get_args(type_annotation)[0]
-            subconfig_type = (
-                element_type if issubclass(element_type, params_dict.ParamsDict)
-                else subconfig_type)
-            break
-          elif _is_optional(type_annotation):
-            # Strip the `Optional` annotation and process the subtype.
+          # If the field is a sequence of sub-config types or an Optional
+          # sub-config, then strip the container and process the sub-config.
+          is_sequence = _is_subtype(
+              typing.get_origin(type_annotation), cls.SEQUENCE_TYPES
+          )
+          if is_sequence or _is_optional(type_annotation):
             type_annotation = typing.get_args(type_annotation)[0]
             continue
         traverse_in = False
@@ -320,6 +344,9 @@ class Config(params_dict.ParamsDict):
   @classmethod
   def from_args(cls, *args, **kwargs):
     """Builds a config from the given list of arguments."""
+    # Note we intend to keep `__annotations__` instead of `_get_annotations`.
+    # Assuming a parent class of (a, b) with the sub-class of (c, d), the
+    # sub-class will take (c, d) for args, rather than starting from (a, b).
     attributes = list(cls.__annotations__.keys())
     default_params = {a: p for a, p in zip(attributes, args)}
     default_params.update(kwargs)

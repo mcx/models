@@ -1,4 +1,4 @@
-# Copyright 2022 The TensorFlow Authors. All Rights Reserved.
+# Copyright 2024 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,9 +14,8 @@
 
 """Box related ops."""
 
-# Import libraries
 import numpy as np
-import tensorflow as tf
+import tensorflow as tf, tf_keras
 
 
 EPSILON = 1e-8
@@ -239,6 +238,28 @@ def horizontal_flip_boxes(normalized_boxes):
     return flipped_boxes
 
 
+def vertical_flip_boxes(normalized_boxes):
+  """Flips normalized boxes vertically.
+
+  Args:
+    normalized_boxes: the boxes in normalzied coordinates.
+
+  Returns:
+    vertically flipped boxes.
+  """
+  if normalized_boxes.shape[-1] != 4:
+    raise ValueError('boxes.shape[-1] is {:d}, but must be 4.'.format(
+        normalized_boxes.shape[-1]))
+
+  with tf.name_scope('vertical_flip_boxes'):
+    ymin, xmin, ymax, xmax = tf.split(
+        value=normalized_boxes, num_or_size_splits=4, axis=-1)
+    flipped_ymin = tf.subtract(1.0, ymax)
+    flipped_ymax = tf.subtract(1.0, ymin)
+    flipped_boxes = tf.concat([flipped_ymin, xmin, flipped_ymax, xmax], axis=-1)
+    return flipped_boxes
+
+
 def clip_boxes(boxes, image_shape):
   """Clips boxes to image boundaries.
 
@@ -347,6 +368,12 @@ def encode_boxes(boxes, anchors, weights=None):
     anchor_w = anchor_xmax - anchor_xmin
     anchor_yc = anchor_ymin + 0.5 * anchor_h
     anchor_xc = anchor_xmin + 0.5 * anchor_w
+
+    # Avoid inf in log below.
+    anchor_h += EPSILON
+    anchor_w += EPSILON
+    box_h += EPSILON
+    box_w += EPSILON
 
     encoded_dy = (box_yc - anchor_yc) / anchor_h
     encoded_dx = (box_xc - anchor_xc) / anchor_w

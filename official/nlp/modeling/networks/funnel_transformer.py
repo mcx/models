@@ -1,4 +1,4 @@
-# Copyright 2022 The TensorFlow Authors. All Rights Reserved.
+# Copyright 2024 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -20,12 +20,12 @@ from typing import Any, Callable, Optional, Sequence, Union
 
 from absl import logging
 import numpy as np
-import tensorflow as tf
+import tensorflow as tf, tf_keras
 
 from official.modeling import tf_utils
 from official.nlp.modeling import layers
 
-_Initializer = Union[str, tf.keras.initializers.Initializer]
+_Initializer = Union[str, tf_keras.initializers.Initializer]
 _Activation = Union[str, Callable[..., Any]]
 
 _MAX = 'max'
@@ -42,12 +42,12 @@ _str2transformer_cls = {
     'ReZeroTransformer': layers.ReZeroTransformer
 }
 
-_approx_gelu = lambda x: tf.keras.activations.gelu(x, approximate=True)
+_approx_gelu = lambda x: tf_keras.activations.gelu(x, approximate=True)
 
 
 def _get_policy_dtype():
   try:
-    return tf.keras.mixed_precision.global_policy().compute_dtype or tf.float32
+    return tf_keras.mixed_precision.global_policy().compute_dtype or tf.float32
   except AttributeError:  # tf1 has no attribute 'global_policy'
     return tf.float32
 
@@ -218,8 +218,8 @@ def _create_truncated_avg_masks(input_mask: tf.Tensor,
   return attention_masks
 
 
-@tf.keras.utils.register_keras_serializable(package='Text')
-class FunnelTransformerEncoder(tf.keras.layers.Layer):
+@tf_keras.utils.register_keras_serializable(package='Text')
+class FunnelTransformerEncoder(tf_keras.layers.Layer):
   """Funnel Transformer-based encoder network.
 
   Funnel Transformer Implementation of https://arxiv.org/abs/2006.03236.
@@ -287,17 +287,18 @@ class FunnelTransformerEncoder(tf.keras.layers.Layer):
       pool_type: str = _MAX,
       pool_stride: Union[int, Sequence[Union[int, float]]] = 2,
       unpool_length: int = 0,
-      initializer: _Initializer = tf.keras.initializers.TruncatedNormal(
+      initializer: _Initializer = tf_keras.initializers.TruncatedNormal(
           stddev=0.02
       ),
       output_range: Optional[int] = None,
       embedding_width: Optional[int] = None,
-      embedding_layer: Optional[tf.keras.layers.Layer] = None,
+      embedding_layer: Optional[tf_keras.layers.Layer] = None,
       norm_first: bool = False,
       transformer_cls: Union[
-          str, tf.keras.layers.Layer
+          str, tf_keras.layers.Layer
       ] = layers.TransformerEncoderBlock,
       share_rezero: bool = False,
+      append_dense_inputs: bool = False,
       **kwargs
   ):
     super().__init__(**kwargs)
@@ -306,8 +307,8 @@ class FunnelTransformerEncoder(tf.keras.layers.Layer):
       logging.warning('`output_range` is available as an argument for `call()`.'
                       'The `output_range` as __init__ argument is deprecated.')
 
-    activation = tf.keras.activations.get(inner_activation)
-    initializer = tf.keras.initializers.get(initializer)
+    activation = tf_keras.activations.get(inner_activation)
+    initializer = tf_keras.initializers.get(initializer)
 
     if embedding_width is None:
       embedding_width = hidden_size
@@ -333,17 +334,17 @@ class FunnelTransformerEncoder(tf.keras.layers.Layer):
         use_one_hot=True,
         name='type_embeddings')
 
-    self._embedding_norm_layer = tf.keras.layers.LayerNormalization(
+    self._embedding_norm_layer = tf_keras.layers.LayerNormalization(
         name='embeddings/layer_norm', axis=-1, epsilon=1e-12, dtype=tf.float32)
 
-    self._embedding_dropout = tf.keras.layers.Dropout(
+    self._embedding_dropout = tf_keras.layers.Dropout(
         rate=output_dropout, name='embedding_dropout')
 
     # We project the 'embedding' output to 'hidden_size' if it is not already
     # 'hidden_size'.
     self._embedding_projection = None
     if embedding_width != hidden_size:
-      self._embedding_projection = tf.keras.layers.EinsumDense(
+      self._embedding_projection = tf_keras.layers.EinsumDense(
           '...x,xy->...y',
           output_shape=hidden_size,
           bias_axes='y',
@@ -372,7 +373,7 @@ class FunnelTransformerEncoder(tf.keras.layers.Layer):
           name='transformer/layer_%d' % i)
       self._transformer_layers.append(layer)
 
-    self._pooler_layer = tf.keras.layers.Dense(
+    self._pooler_layer = tf_keras.layers.Dense(
         units=hidden_size,
         activation='tanh',
         kernel_initializer=tf_utils.clone_initializer(initializer),
@@ -394,11 +395,11 @@ class FunnelTransformerEncoder(tf.keras.layers.Layer):
           ' `pool_type`=`truncated_average`'
       )
 
-    # TODO(crickwu): explore tf.keras.layers.serialize method.
+    # TODO(crickwu): explore tf_keras.layers.serialize method.
     if pool_type == _MAX:
-      pool_cls = tf.keras.layers.MaxPooling1D
+      pool_cls = tf_keras.layers.MaxPooling1D
     elif pool_type == _AVG:
-      pool_cls = tf.keras.layers.AveragePooling1D
+      pool_cls = tf_keras.layers.AveragePooling1D
     elif pool_type == _TRUNCATED_AVG:
       # TODO(b/203665205): unpool_length should be implemented.
       if unpool_length != 0:
@@ -420,6 +421,7 @@ class FunnelTransformerEncoder(tf.keras.layers.Layer):
     self._pool_strides = pool_strides  # This is a list here.
     self._unpool_length = unpool_length
     self._pool_type = pool_type
+    self._append_dense_inputs = append_dense_inputs
 
     self._config = {
         'vocab_size': vocab_size,
@@ -429,10 +431,10 @@ class FunnelTransformerEncoder(tf.keras.layers.Layer):
         'max_sequence_length': max_sequence_length,
         'type_vocab_size': type_vocab_size,
         'inner_dim': inner_dim,
-        'inner_activation': tf.keras.activations.serialize(activation),
+        'inner_activation': tf_keras.activations.serialize(activation),
         'output_dropout': output_dropout,
         'attention_dropout': attention_dropout,
-        'initializer': tf.keras.initializers.serialize(initializer),
+        'initializer': tf_keras.initializers.serialize(initializer),
         'output_range': output_range,
         'embedding_width': embedding_width,
         'embedding_layer': embedding_layer,
@@ -446,12 +448,13 @@ class FunnelTransformerEncoder(tf.keras.layers.Layer):
     }
 
     self.inputs = dict(
-        input_word_ids=tf.keras.Input(shape=(None,), dtype=tf.int32),
-        input_mask=tf.keras.Input(shape=(None,), dtype=tf.int32),
-        input_type_ids=tf.keras.Input(shape=(None,), dtype=tf.int32))
+        input_word_ids=tf_keras.Input(shape=(None,), dtype=tf.int32),
+        input_mask=tf_keras.Input(shape=(None,), dtype=tf.int32),
+        input_type_ids=tf_keras.Input(shape=(None,), dtype=tf.int32))
 
   def call(self, inputs, output_range: Optional[tf.Tensor] = None):
     # inputs are [word_ids, mask, type_ids]
+    word_embeddings = None
     if isinstance(inputs, (list, tuple)):
       logging.warning('List inputs to  %s are discouraged.', self.__class__)
       if len(inputs) == 3:
@@ -472,6 +475,7 @@ class FunnelTransformerEncoder(tf.keras.layers.Layer):
       word_ids = inputs.get('input_word_ids')
       mask = inputs.get('input_mask')
       type_ids = inputs.get('input_type_ids')
+      word_embeddings = inputs.get('input_word_embeddings', None)
 
       dense_inputs = inputs.get('dense_inputs', None)
       dense_mask = inputs.get('dense_mask', None)
@@ -479,19 +483,31 @@ class FunnelTransformerEncoder(tf.keras.layers.Layer):
     else:
       raise ValueError('Unexpected inputs type to %s.' % self.__class__)
 
-    word_embeddings = self._embedding_layer(word_ids)
+    if word_embeddings is None:
+      word_embeddings = self._embedding_layer(word_ids)
 
     if dense_inputs is not None:
-      # Concat the dense embeddings at sequence begin so unpool_len can control
-      # embedding not being pooled.
-      word_embeddings = tf.concat([dense_inputs, word_embeddings], axis=1)
-      type_ids = tf.concat([dense_type_ids, type_ids], axis=1)
-      mask = tf.concat([dense_mask, mask], axis=1)
+      # Allow concatenation of the dense embeddings at sequence end if requested
+      # and `unpool_length`` is set as zero
+      if self._append_dense_inputs:
+        if self._unpool_length != 0:
+          raise ValueError(
+              'unpool_length is not supported by append_dense_inputs now.'
+          )
+        word_embeddings = tf.concat([word_embeddings, dense_inputs], axis=1)
+        type_ids = tf.concat([type_ids, dense_type_ids], axis=1)
+        mask = tf.concat([mask, dense_mask], axis=1)
+      else:
+        # Concat the dense embeddings at sequence begin so unpool_len can
+        # control embedding not being pooled.
+        word_embeddings = tf.concat([dense_inputs, word_embeddings], axis=1)
+        type_ids = tf.concat([dense_type_ids, type_ids], axis=1)
+        mask = tf.concat([dense_mask, mask], axis=1)
     # absolute position embeddings
     position_embeddings = self._position_embedding_layer(word_embeddings)
     type_embeddings = self._type_embedding_layer(type_ids)
 
-    embeddings = tf.keras.layers.add(
+    embeddings = tf_keras.layers.add(
         [word_embeddings, position_embeddings, type_embeddings])
     embeddings = self._embedding_norm_layer(embeddings)
     embeddings = self._embedding_dropout(embeddings)
@@ -512,9 +528,15 @@ class FunnelTransformerEncoder(tf.keras.layers.Layer):
           axes=[1])
 
       for i, layer in enumerate(self._transformer_layers):
+        transformer_output_range = None
+        if i == self._num_layers - 1:
+          transformer_output_range = output_range
+
         # Bypass no pooling cases.
         if self._pool_strides[i] == 1:
-          x = layer([x, x, attention_mask])
+          x = layer(
+              [x, x, attention_mask], output_range=transformer_output_range
+          )
         else:
           # Pools layer for compressing the query length.
           pooled_inputs = self._att_input_pool_layers[i](
@@ -525,8 +547,7 @@ class FunnelTransformerEncoder(tf.keras.layers.Layer):
                   dtype=pooled_inputs.dtype), pooled_inputs),
               axis=1)
           x = layer([query_inputs, x, attention_mask],
-                    output_range=output_range if i == self._num_layers -
-                    1 else None)
+                    output_range=transformer_output_range)
         # Pools the corresponding attention_mask.
         if i < len(self._transformer_layers) - 1:
           attention_mask = _pool_and_concat(

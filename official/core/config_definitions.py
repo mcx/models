@@ -1,4 +1,4 @@
-# Copyright 2022 The TensorFlow Authors. All Rights Reserved.
+# Copyright 2024 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -55,6 +55,8 @@ class DataConfig(base_config.Config):
       interleaving files.
     block_length: The number of consecutive elements to produce from each input
       element before cycling to another input element when interleaving files.
+    ram_budget: RAM budget for tf.data service in GB. If None, tf.data will use
+      50% of the available host RAM.
     deterministic: A boolean controlling whether determinism should be enforced.
     sharding: Whether sharding is used in the input pipeline.
     enable_tf_data_service: A boolean indicating whether to enable tf.data
@@ -104,6 +106,8 @@ class DataConfig(base_config.Config):
       datasets. If None, the buffer size is autotuned. Specifying this is useful
       in case autotuning uses up too much memory by making the buffer size too
       high.
+    autotune_algorithm: If specified, use this algorithm for AUTOTUNE. See:
+      https://www.tensorflow.org/api_docs/python/tf/data/experimental/AutotuneAlgorithm
   """
   input_path: Union[Sequence[str], str, base_config.Config] = ""
   tfds_name: Union[str, base_config.Config] = ""
@@ -115,6 +119,7 @@ class DataConfig(base_config.Config):
   cache: bool = False
   cycle_length: Optional[int] = None
   block_length: int = 1
+  ram_budget: Optional[int] = None
   deterministic: Optional[bool] = None
   sharding: bool = True
   enable_tf_data_service: bool = False
@@ -128,6 +133,7 @@ class DataConfig(base_config.Config):
   trainer_id: Optional[str] = None
   seed: Optional[int] = None
   prefetch_buffer_size: Optional[int] = None
+  autotune_algorithm: Optional[str] = None
 
 
 @dataclasses.dataclass
@@ -193,6 +199,7 @@ class RuntimeConfig(base_config.Config):
   # Global model parallelism configurations.
   num_cores_per_replica: int = 1
   default_shard_dim: int = -1
+  use_tpu_mp_strategy: bool = False
 
   def model_parallelism(self):
     return dict(
@@ -210,6 +217,7 @@ class TrainerConfig(base_config.Config):
     train_tf_while_loop: whether or not to use tf while loop.
     train_tf_function: whether or not to use tf_function for training loop.
     eval_tf_function: whether or not to use tf_function for eval.
+    eval_tf_while_loop: whether or not to use tf while loop for eval.
     allow_tpu_summary: Whether to allow summary happen inside the XLA program
       runs on TPU through automatic outside compilation.
     steps_per_loop: number of steps per loop to report training metrics. This
@@ -240,7 +248,9 @@ class TrainerConfig(base_config.Config):
     preemption_on_demand_checkpoint: whether or not to save on-demand
       checkpoints after a preemption.
   """
-  optimizer_config: OptimizationConfig = OptimizationConfig()
+  optimizer_config: OptimizationConfig = dataclasses.field(
+      default_factory=OptimizationConfig
+  )
   # Orbit settings.
   train_tf_while_loop: bool = True
   train_tf_function: bool = True
@@ -272,7 +282,7 @@ class TrainerConfig(base_config.Config):
   recovery_max_trials: int = 0
   validation_summary_subdir: str = "validation"
   # Preemption on-demand checkpoint.
-  preemption_on_demand_checkpoint: bool = True
+  preemption_on_demand_checkpoint: bool = True  # copybara-replace
 
 
 @dataclasses.dataclass
@@ -280,8 +290,8 @@ class TaskConfig(base_config.Config):
   """Config passed to task."""
   init_checkpoint: str = ""
   model: Optional[base_config.Config] = None
-  train_data: DataConfig = DataConfig()
-  validation_data: DataConfig = DataConfig()
+  train_data: DataConfig = dataclasses.field(default_factory=DataConfig)
+  validation_data: DataConfig = dataclasses.field(default_factory=DataConfig)
   name: Optional[str] = None
   # Configs for differential privacy
   # These configs are only effective if you use create_optimizer in
@@ -289,11 +299,14 @@ class TaskConfig(base_config.Config):
   # DEPRECATED b/264611883
   differential_privacy_config: Optional[
       dp_configs.DifferentialPrivacyConfig] = None
+  # Whether to show image summary. Useful to visualize model predictions. Only
+  # work for vision tasks.
+  allow_image_summary: bool = False
 
 
 @dataclasses.dataclass
 class ExperimentConfig(base_config.Config):
   """Top-level configuration."""
-  task: TaskConfig = TaskConfig()
-  trainer: TrainerConfig = TrainerConfig()
-  runtime: RuntimeConfig = RuntimeConfig()
+  task: TaskConfig = dataclasses.field(default_factory=TaskConfig)
+  trainer: TrainerConfig = dataclasses.field(default_factory=TrainerConfig)
+  runtime: RuntimeConfig = dataclasses.field(default_factory=RuntimeConfig)

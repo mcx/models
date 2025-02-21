@@ -1,4 +1,4 @@
-# Copyright 2022 The TensorFlow Authors. All Rights Reserved.
+# Copyright 2024 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -16,19 +16,19 @@
 import functools
 from typing import Callable, List, Tuple
 
-import tensorflow as tf
+import tensorflow as tf, tf_keras
 
 from official.modeling import tf_utils
 from official.vision.ops import spatial_transform_ops
 
 
-class Identity(tf.keras.layers.Layer):
+class Identity(tf_keras.layers.Layer):
 
   def call(self, inputs):
     return inputs
 
 
-class ConvBN(tf.keras.layers.Layer):
+class ConvBN(tf_keras.layers.Layer):
   """ConvBN block.
 
   Modified Convolution layer to match that of the Darknet Library.
@@ -102,7 +102,7 @@ class ConvBN(tf.keras.layers.Layer):
 
     if kernel_initializer == 'VarianceScaling':
       # to match pytorch initialization method
-      self._kernel_initializer = tf.keras.initializers.VarianceScaling(
+      self._kernel_initializer = tf_keras.initializers.VarianceScaling(
           scale=1 / 3, mode='fan_in', distribution='uniform')
     else:
       self._kernel_initializer = kernel_initializer
@@ -123,16 +123,13 @@ class ConvBN(tf.keras.layers.Layer):
     if not isinstance(ksize, List) and not isinstance(ksize, Tuple):
       ksize = [ksize]
     if use_separable_conv and not all([a == 1 for a in ksize]):
-      self._conv_base = tf.keras.layers.SeparableConv2D
+      self._conv_base = tf_keras.layers.SeparableConv2D
     else:
-      self._conv_base = tf.keras.layers.Conv2D
+      self._conv_base = tf_keras.layers.Conv2D
 
-    if use_sync_bn:
-      self._bn_base = tf.keras.layers.experimental.SyncBatchNormalization
-    else:
-      self._bn_base = tf.keras.layers.BatchNormalization
+    self._bn_base = tf_keras.layers.BatchNormalization
 
-    if tf.keras.backend.image_data_format() == 'channels_last':
+    if tf_keras.backend.image_data_format() == 'channels_last':
       # format: (batch_size, height, width, channels)
       self._bn_axis = -1
     else:
@@ -165,12 +162,13 @@ class ConvBN(tf.keras.layers.Layer):
       self.bn = self._bn_base(
           momentum=self._norm_momentum,
           epsilon=self._norm_epsilon,
-          axis=self._bn_axis)
+          axis=self._bn_axis,
+          synchronized=self._use_sync_bn)
     else:
       self.bn = None
 
     if self._activation == 'leaky':
-      self._activation_fn = tf.keras.layers.LeakyReLU(alpha=self._leaky_alpha)
+      self._activation_fn = tf_keras.layers.LeakyReLU(alpha=self._leaky_alpha)
     elif self._activation == 'mish':
       self._activation_fn = lambda x: x * tf.math.tanh(tf.math.softplus(x))
     else:
@@ -240,7 +238,7 @@ class ConvBN(tf.keras.layers.Layer):
     return layer_config
 
 
-class DarkResidual(tf.keras.layers.Layer):
+class DarkResidual(tf_keras.layers.Layer):
   """Darknet block with Residual connection for Yolo v3 Backbone."""
 
   def __init__(self,
@@ -366,9 +364,9 @@ class DarkResidual(tf.keras.layers.Layer):
         padding='same',
         **dark_conv_args)
 
-    self._shortcut = tf.keras.layers.Add()
+    self._shortcut = tf_keras.layers.Add()
     if self._sc_activation == 'leaky':
-      self._activation_fn = tf.keras.layers.LeakyReLU(alpha=self._leaky_alpha)
+      self._activation_fn = tf_keras.layers.LeakyReLU(alpha=self._leaky_alpha)
     elif self._sc_activation == 'mish':
       self._activation_fn = lambda x: x * tf.math.tanh(tf.math.softplus(x))
     else:
@@ -404,13 +402,13 @@ class DarkResidual(tf.keras.layers.Layer):
     return layer_config
 
 
-class CSPTiny(tf.keras.layers.Layer):
+class CSPTiny(tf_keras.layers.Layer):
   """CSP Tiny layer.
 
   A Small size convolution block proposed in the CSPNet. The layer uses
   shortcuts, routing(concatnation), and feature grouping in order to improve
   gradient variablity and allow for high efficency, low power residual learning
-  for small networtf.keras.
+  for small networtf_keras.
   Cross Stage Partial networks (CSPNets) were proposed in:
   [1] Chien-Yao Wang, Hong-Yuan Mark Liao, I-Hau Yeh, Yueh-Hua Wu,
         Ping-Yang Chen, Jun-Wei Hsieh
@@ -535,7 +533,7 @@ class CSPTiny(tf.keras.layers.Layer):
         **dark_conv_args)
 
     if self._downsample:
-      self._maxpool = tf.keras.layers.MaxPool2D(
+      self._maxpool = tf_keras.layers.MaxPool2D(
           pool_size=2, strides=2, padding='same', data_format=None)
 
     super().build(input_shape)
@@ -553,7 +551,7 @@ class CSPTiny(tf.keras.layers.Layer):
     return x, x5
 
 
-class CSPRoute(tf.keras.layers.Layer):
+class CSPRoute(tf_keras.layers.Layer):
   """CSPRoute block.
 
   Down sampling layer to take the place of down sampleing done in Residual
@@ -692,7 +690,7 @@ class CSPRoute(tf.keras.layers.Layer):
     return (x, y)
 
 
-class CSPConnect(tf.keras.layers.Layer):
+class CSPConnect(tf_keras.layers.Layer):
   """CSPConnect block.
 
   Sister Layer to the CSPRoute layer. Merges the partial feature stacks
@@ -795,7 +793,7 @@ class CSPConnect(tf.keras.layers.Layer):
           kernel_size=self._kernel_size,
           strides=(1, 1),
           **dark_conv_args)
-    self._concat = tf.keras.layers.Concatenate(axis=-1)
+    self._concat = tf_keras.layers.Concatenate(axis=-1)
 
     if not self._drop_final:
       self._conv2 = ConvBN(
@@ -816,7 +814,7 @@ class CSPConnect(tf.keras.layers.Layer):
     return x
 
 
-class CSPStack(tf.keras.layers.Layer):
+class CSPStack(tf_keras.layers.Layer):
   """CSP Stack layer.
 
   CSP full stack, combines the route and the connect in case you dont want to
@@ -936,7 +934,7 @@ class CSPStack(tf.keras.layers.Layer):
     return x
 
 
-class PathAggregationBlock(tf.keras.layers.Layer):
+class PathAggregationBlock(tf_keras.layers.Layer):
   """Path Aggregation block."""
 
   def __init__(self,
@@ -1090,7 +1088,7 @@ class PathAggregationBlock(tf.keras.layers.Layer):
     else:
       self._build_regular(input_shape, dark_conv_args)
 
-    self._concat = tf.keras.layers.Concatenate()
+    self._concat = tf_keras.layers.Concatenate()
     super().build(input_shape)
 
   def _call_regular(self, inputs, training=None):
@@ -1126,7 +1124,7 @@ class PathAggregationBlock(tf.keras.layers.Layer):
       return self._call_regular(inputs, training=training)
 
 
-class SPP(tf.keras.layers.Layer):
+class SPP(tf_keras.layers.Layer):
   """Spatial Pyramid Pooling.
 
   A non-agregated SPP layer that uses Pooling.
@@ -1135,14 +1133,14 @@ class SPP(tf.keras.layers.Layer):
   def __init__(self, sizes, **kwargs):
     self._sizes = list(reversed(sizes))
     if not sizes:
-      raise ValueError('More than one maxpool should be specified in SSP block')
+      raise ValueError('More than one maxpool should be specified in SPP block')
     super().__init__(**kwargs)
 
   def build(self, input_shape):
     maxpools = []
     for size in self._sizes:
       maxpools.append(
-          tf.keras.layers.MaxPool2D(
+          tf_keras.layers.MaxPool2D(
               pool_size=(size, size),
               strides=(1, 1),
               padding='same',
@@ -1155,7 +1153,7 @@ class SPP(tf.keras.layers.Layer):
     for maxpool in self._maxpools:
       outputs.append(maxpool(inputs))
     outputs.append(inputs)
-    concat_output = tf.keras.layers.concatenate(outputs)
+    concat_output = tf_keras.layers.concatenate(outputs)
     return concat_output
 
   def get_config(self):
@@ -1164,7 +1162,7 @@ class SPP(tf.keras.layers.Layer):
     return layer_config
 
 
-class SAM(tf.keras.layers.Layer):
+class SAM(tf_keras.layers.Layer):
   """Spatial Attention Model.
 
   [1] Sanghyun Woo, Jongchan Park, Joon-Young Lee, In So Kweon
@@ -1226,7 +1224,7 @@ class SAM(tf.keras.layers.Layer):
       self._filters = input_shape[-1]
     self._conv = ConvBN(filters=self._filters, **self.dark_conv_args)
     if self._output_activation == 'leaky':
-      self._activation_fn = tf.keras.layers.LeakyReLU(alpha=self._leaky_alpha)
+      self._activation_fn = tf_keras.layers.LeakyReLU(alpha=self._leaky_alpha)
     elif self._output_activation == 'mish':
       self._activation_fn = lambda x: x * tf.math.tanh(tf.math.softplus(x))
     else:
@@ -1244,7 +1242,7 @@ class SAM(tf.keras.layers.Layer):
     return self._activation_fn(inputs * attention_mask)
 
 
-class CAM(tf.keras.layers.Layer):
+class CAM(tf_keras.layers.Layer):
   """Channel Attention Model.
 
   [1] Sanghyun Woo, Jongchan Park, Joon-Young Lee, In So Kweon
@@ -1271,16 +1269,12 @@ class CAM(tf.keras.layers.Layer):
 
     self._reduction_ratio = reduction_ratio
 
-    # use_pooling
-    if use_sync_bn:
-      self._bn = tf.keras.layers.experimental.SyncBatchNormalization
-    else:
-      self._bn = tf.keras.layers.BatchNormalization
-
     if not use_bn:
       self._bn = Identity
       self._bn_args = {}
     else:
+      self._bn = functools.partial(
+          tf_keras.layers.BatchNormalization, synchronized=use_sync_bn)
       self._bn_args = {
           'momentum': norm_momentum,
           'epsilon': norm_epsilon,
@@ -1303,18 +1297,18 @@ class CAM(tf.keras.layers.Layer):
   def build(self, input_shape):
     self._filters = input_shape[-1]
 
-    self._mlp = tf.keras.Sequential([
-        tf.keras.layers.Dense(self._filters, **self._mlp_args),
+    self._mlp = tf_keras.Sequential([
+        tf_keras.layers.Dense(self._filters, **self._mlp_args),
         self._bn(**self._bn_args),
-        tf.keras.layers.Dense(
+        tf_keras.layers.Dense(
             int(self._filters * self._reduction_ratio), **self._mlp_args),
         self._bn(**self._bn_args),
-        tf.keras.layers.Dense(self._filters, **self._mlp_args),
+        tf_keras.layers.Dense(self._filters, **self._mlp_args),
         self._bn(**self._bn_args),
     ])
 
     if self._activation == 'leaky':
-      self._activation_fn = tf.keras.layers.LeakyReLU(alpha=self._leaky_alpha)
+      self._activation_fn = tf_keras.layers.LeakyReLU(alpha=self._leaky_alpha)
     elif self._activation == 'mish':
       self._activation_fn = lambda x: x * tf.math.tanh(tf.math.softplus(x))
     else:
@@ -1331,7 +1325,7 @@ class CAM(tf.keras.layers.Layer):
     return inputs * attention_mask
 
 
-class CBAM(tf.keras.layers.Layer):
+class CBAM(tf_keras.layers.Layer):
   """Convolutional Block Attention Module.
 
   [1] Sanghyun Woo, Jongchan Park, Joon-Young Lee, In So Kweon
@@ -1404,7 +1398,7 @@ class CBAM(tf.keras.layers.Layer):
     return self._sam(self._cam(inputs))
 
 
-class DarkRouteProcess(tf.keras.layers.Layer):
+class DarkRouteProcess(tf_keras.layers.Layer):
   """Dark Route Process block.
 
   Process darknet outputs and connect back bone to head more generalizably
@@ -1702,7 +1696,7 @@ class DarkRouteProcess(tf.keras.layers.Layer):
       return self._call_regular(inputs)
 
 
-class Reorg(tf.keras.layers.Layer):
+class Reorg(tf_keras.layers.Layer):
   """Splits a high resolution image into 4 lower resolution images.
 
   Used in YOLOR to process very high resolution inputs efficiently.
@@ -1719,7 +1713,7 @@ class Reorg(tf.keras.layers.Layer):
                      axis=-1)
 
 
-class SPPCSPC(tf.keras.layers.Layer):
+class SPPCSPC(tf_keras.layers.Layer):
   """Cross-stage partial network with spatial pyramid pooling.
 
   This module is used in YOLOv7 to process backbone feature at the highest
@@ -1789,14 +1783,21 @@ class SPPCSPC(tf.keras.layers.Layer):
     conv_op = functools.partial(
         ConvBN,
         activation=self._activation,
+        use_separable_conv=self._use_separable_conv,
         kernel_initializer=self._kernel_initializer,
         kernel_regularizer=self._kernel_regularizer,
+        bias_initializer=self._bias_initializer,
+        bias_regularizer=self._bias_regularizer,
+        use_bn=self._use_bn,
+        use_sync_bn=self._use_sync_bn,
+        norm_momentum=self._norm_momentum,
+        norm_epsilon=self._norm_epsilon,
     )
     self._conv1_1 = conv_op(filters, kernel_size=1, strides=1)
     self._conv1_2 = conv_op(filters, kernel_size=3, strides=1)
     self._conv1_3 = conv_op(filters, kernel_size=1, strides=1)
     self._poolings = [
-        tf.keras.layers.MaxPooling2D(pool_size, strides=1, padding='same')
+        tf_keras.layers.MaxPooling2D(pool_size, strides=1, padding='same')
         for pool_size in self._pool_sizes
     ]
     self._conv1_4 = conv_op(filters, kernel_size=1, strides=1)
@@ -1838,7 +1839,7 @@ class SPPCSPC(tf.keras.layers.Layer):
     return layer_config
 
 
-class RepConv(tf.keras.layers.Layer):
+class RepConv(tf_keras.layers.Layer):
   """Represented convolution.
 
   https://arxiv.org/abs/2101.03697
@@ -1851,6 +1852,7 @@ class RepConv(tf.keras.layers.Layer):
       strides=1,
       padding='same',
       activation='swish',
+      use_separable_conv=False,
       use_sync_bn=False,
       norm_momentum=0.99,
       norm_epsilon=0.001,
@@ -1870,11 +1872,12 @@ class RepConv(tf.keras.layers.Layer):
         use.
       padding: string 'valid' or 'same', if same, then pad the image, else do
         not.
-      activation: string or None for activation function to use in layer,
-        if None activation is replaced by linear.
-      use_sync_bn: boolean for whether sync batch normalization statistics
-        of all batch norm layers to the models global statistics
-        (across all input batches).
+      activation: string or None for activation function to use in layer, if
+        None activation is replaced by linear.
+      use_separable_conv: `bool` wether to use separable convs.
+      use_sync_bn: boolean for whether sync batch normalization statistics of
+        all batch norm layers to the models global statistics (across all input
+        batches).
       norm_momentum: float for moment to use for batch normalization.
       norm_epsilon: float for batch normalization epsilon.
       kernel_initializer: string to indicate which function to use to initialize
@@ -1893,6 +1896,7 @@ class RepConv(tf.keras.layers.Layer):
     self._strides = strides
     self._padding = padding
     self._activation = activation
+    self._use_separable_conv = use_separable_conv
     self._use_sync_bn = use_sync_bn
     self._norm_momentum = norm_momentum
     self._norm_epsilon = norm_epsilon
@@ -1905,18 +1909,19 @@ class RepConv(tf.keras.layers.Layer):
 
   def build(self, input_shape):
     conv_op = functools.partial(
-        tf.keras.layers.Conv2D,
+        tf_keras.layers.SeparableConv2D
+        if self._use_separable_conv
+        else tf_keras.layers.Conv2D,
         filters=self._filters,
         strides=self._strides,
         padding=self._padding,
-        activation=self._activation,
         kernel_initializer=self._kernel_initializer,
         kernel_regularizer=self._kernel_regularizer,
         bias_initializer=self._bias_initializer,
         bias_regularizer=self._bias_regularizer,
     )
     bn_op = functools.partial(
-        tf.keras.layers.BatchNormalization,
+        tf_keras.layers.BatchNormalization,
         synchronized=self._use_sync_bn,
         momentum=self._norm_momentum,
         epsilon=self._norm_epsilon,

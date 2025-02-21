@@ -1,4 +1,4 @@
-# Copyright 2022 The TensorFlow Authors. All Rights Reserved.
+# Copyright 2024 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -17,14 +17,18 @@
 from typing import Any, Callable, Mapping, Optional, Tuple, Union
 
 from absl import logging
-import tensorflow as tf
+import tensorflow as tf, tf_keras
 
 from official.core import config_definitions as cfg
 from official.core import input_reader
 
 
+InputReader = input_reader.InputReader
+
+
 def build_weighted_sampling_combine_fn(
-    weights: Mapping[Any, Any]) -> Callable[[tf.data.Dataset], tf.data.Dataset]:
+    weights: Mapping[Any, Any], stop_on_empty_dataset=True
+) -> Callable[[tf.data.Dataset], tf.data.Dataset]:
   """Builds a combine_fn using weighted sampling."""
 
   def combine_fn(datasets: Mapping[Any, tf.data.Dataset]) -> tf.data.Dataset:
@@ -35,7 +39,7 @@ def build_weighted_sampling_combine_fn(
       ds.append(dataset)
       ws.append(weights[k])
     return tf.data.Dataset.sample_from_datasets(
-        ds, ws, stop_on_empty_dataset=True)
+        ds, ws, stop_on_empty_dataset=stop_on_empty_dataset)
 
   return combine_fn
 
@@ -44,7 +48,15 @@ def create_combine_fn(
     params: cfg.DataConfig
 ) -> Union[None, Callable[[tf.data.Dataset], tf.data.Dataset]]:
   """Creates and returns a combine_fn for dataset mixing."""
-  if params.is_training and params.weights:
+  if (
+      hasattr(params, 'stop_on_empty_dataset')
+      and params.stop_on_empty_dataset is not None
+  ):
+    stop_on_empty_dataset = params.stop_on_empty_dataset
+  else:
+    stop_on_empty_dataset = True
+
+  if params.weights:
     # Combine multiple datasets using weighted sampling.
     if (not isinstance(params.input_path, cfg.base_config.Config) or
         not isinstance(params.weights, cfg.base_config.Config)):
@@ -63,7 +75,7 @@ def create_combine_fn(
         raise ValueError(
             'input_path key \'%s\' does not have a corresponding weight.' % k)
 
-    return build_weighted_sampling_combine_fn(weights)
+    return build_weighted_sampling_combine_fn(weights, stop_on_empty_dataset)
   return None
 
 
@@ -198,24 +210,21 @@ class CombinationDatasetInputReader(input_reader.InputReader):
               self._global_batch_size, self._pseudo_label_data_ratio))
 
     def _read_decode_and_parse_dataset(matched_files, dataset_fn, batch_size,
-                                       input_context, tfds_builder):
-      dataset = self._read_data_source(matched_files, dataset_fn, input_context,
-                                       tfds_builder)
+                                       input_context):
+      dataset = self._read_data_source(matched_files, dataset_fn, input_context)
       return self._decode_and_parse_dataset(dataset, batch_size, input_context)
 
     labeled_dataset = _read_decode_and_parse_dataset(
         matched_files=self._matched_files,
         dataset_fn=self._dataset_fn,
         batch_size=labeled_batch_size,
-        input_context=input_context,
-        tfds_builder=self._tfds_builder)
+        input_context=input_context)
 
     pseudo_labeled_dataset = _read_decode_and_parse_dataset(
         matched_files=self._pseudo_label_matched_files,
         dataset_fn=self._pseudo_label_dataset_fn,
         batch_size=pl_batch_size,
-        input_context=input_context,
-        tfds_builder=False)
+        input_context=input_context)
 
     def concat_fn(d1, d2):
       return tf.nest.map_structure(

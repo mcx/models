@@ -1,4 +1,4 @@
-# Copyright 2022 The TensorFlow Authors. All Rights Reserved.
+# Copyright 2024 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -16,7 +16,7 @@
 from typing import Optional
 
 from absl import logging
-import tensorflow as tf
+import tensorflow as tf, tf_keras
 
 from official.common import dataset_fn
 from official.core import base_task
@@ -47,7 +47,7 @@ class DetectionTask(base_task.Task):
   def build_model(self):
     """Build DETR model."""
 
-    input_specs = tf.keras.layers.InputSpec(shape=[None] +
+    input_specs = tf_keras.layers.InputSpec(shape=[None] +
                                             self._task_config.model.input_size)
 
     backbone = backbones.factory.build_backbone(
@@ -64,7 +64,7 @@ class DetectionTask(base_task.Task):
                       self._task_config.model.num_decoder_layers)
     return model
 
-  def initialize(self, model: tf.keras.Model):
+  def initialize(self, model: tf_keras.Model):
     """Loading pretrained checkpoint."""
     if not self._task_config.init_checkpoint:
       return
@@ -128,35 +128,44 @@ class DetectionTask(base_task.Task):
     # The 1 is a constant that doesn't change the matching, it can be ommitted.
     # background: 0
     cls_cost = self._task_config.losses.lambda_cls * tf.gather(
-        -tf.nn.softmax(cls_outputs), cls_targets, batch_dims=1, axis=-1)
+        -tf.nn.softmax(cls_outputs), cls_targets, batch_dims=1, axis=-1
+    )
 
     # Compute the L1 cost between boxes,
     paired_differences = self._task_config.losses.lambda_box * tf.abs(
-        tf.expand_dims(box_outputs, 2) - tf.expand_dims(box_targets, 1))
+        tf.expand_dims(box_outputs, 2) - tf.expand_dims(box_targets, 1)
+    )
     box_cost = tf.reduce_sum(paired_differences, axis=-1)
 
     # Compute the giou cost betwen boxes
-    giou_cost = self._task_config.losses.lambda_giou * -box_ops.bbox_generalized_overlap(
-        box_ops.cycxhw_to_yxyx(box_outputs),
-        box_ops.cycxhw_to_yxyx(box_targets))
+    giou_cost = (
+        self._task_config.losses.lambda_giou
+        * -box_ops.bbox_generalized_overlap(
+            box_ops.cycxhw_to_yxyx(box_outputs),
+            box_ops.cycxhw_to_yxyx(box_targets),
+        )
+    )
 
     total_cost = cls_cost + box_cost + giou_cost
 
     max_cost = (
-        self._task_config.losses.lambda_cls * 0.0 +
-        self._task_config.losses.lambda_box * 4. +
-        self._task_config.losses.lambda_giou * 0.0)
+        self._task_config.losses.lambda_cls * 1.0
+        + self._task_config.losses.lambda_box * 4.0
+        + self._task_config.losses.lambda_giou * 1.0
+    )
 
     # Set pads to large constant
     valid = tf.expand_dims(
-        tf.cast(tf.not_equal(cls_targets, 0), dtype=total_cost.dtype), axis=1)
+        tf.cast(tf.not_equal(cls_targets, 0), dtype=total_cost.dtype), axis=1
+    )
     total_cost = (1 - valid) * max_cost + valid * total_cost
 
     # Set inf of nan to large constant
     total_cost = tf.where(
         tf.logical_or(tf.math.is_nan(total_cost), tf.math.is_inf(total_cost)),
         max_cost * tf.ones_like(total_cost, dtype=total_cost.dtype),
-        total_cost)
+        total_cost,
+    )
 
     return total_cost
 
@@ -229,7 +238,7 @@ class DetectionTask(base_task.Task):
     metrics = []
     metric_names = ['cls_loss', 'box_loss', 'giou_loss']
     for name in metric_names:
-      metrics.append(tf.keras.metrics.Mean(name, dtype=tf.float32))
+      metrics.append(tf_keras.metrics.Mean(name, dtype=tf.float32))
 
     if not training:
       self.coco_metric = coco_evaluator.COCOEvaluator(
@@ -262,8 +271,11 @@ class DetectionTask(base_task.Task):
 
       for output in outputs:
         # Computes per-replica loss.
-        layer_loss, layer_cls_loss, layer_box_loss, layer_giou_loss = self.build_losses(
-            outputs=output, labels=labels, aux_losses=model.losses)
+        layer_loss, layer_cls_loss, layer_box_loss, layer_giou_loss = (
+            self.build_losses(
+                outputs=output, labels=labels, aux_losses=model.losses
+            )
+        )
         loss += layer_loss
         cls_loss += layer_cls_loss
         box_loss += layer_box_loss
@@ -273,13 +285,13 @@ class DetectionTask(base_task.Task):
       scaled_loss = loss
       # For mixed_precision policy, when LossScaleOptimizer is used, loss is
       # scaled for numerical stability.
-      if isinstance(optimizer, tf.keras.mixed_precision.LossScaleOptimizer):
+      if isinstance(optimizer, tf_keras.mixed_precision.LossScaleOptimizer):
         scaled_loss = optimizer.get_scaled_loss(scaled_loss)
 
     tvars = model.trainable_variables
     grads = tape.gradient(scaled_loss, tvars)
     # Scales back gradient when LossScaleOptimizer is used.
-    if isinstance(optimizer, tf.keras.mixed_precision.LossScaleOptimizer):
+    if isinstance(optimizer, tf_keras.mixed_precision.LossScaleOptimizer):
       grads = optimizer.get_unscaled_gradients(grads)
     optimizer.apply_gradients(list(zip(grads, tvars)))
 
